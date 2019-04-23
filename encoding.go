@@ -3,37 +3,12 @@ package gorpc
 import (
 	"bufio"
 	"compress/flate"
-	"encoding/gob"
+	"github.com/golang/protobuf/proto"
 	"io"
 )
 
-// RegisterType registers the given type to send via rpc.
-//
-// The client must register all the response types the server may send.
-// The server must register all the request types the client may send.
-//
-// There is no need in registering base Go types such as int, string, bool,
-// float64, etc. or arrays, slices and maps containing base Go types.
-//
-// There is no need in registering argument and return value types
-// for functions and methods registered via Dispatcher.
-func RegisterType(x interface{}) {
-	gob.Register(x)
-}
-
-type wireRequest struct {
-	ID      uint64
-	Request interface{}
-}
-
-type wireResponse struct {
-	ID       uint64
-	Response interface{}
-	Error    string
-}
-
 type messageEncoder struct {
-	e  *gob.Encoder
+	w  *bufio.Writer
 	bw *bufio.Writer
 	zw *flate.Writer
 	ww *bufio.Writer
@@ -61,31 +36,33 @@ func (e *messageEncoder) Flush() error {
 	return nil
 }
 
-func (e *messageEncoder) Encode(msg interface{}) error {
-	return e.e.Encode(msg)
+func (e *messageEncoder) Encode(msg *Request) error {
+	b, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = e.w.Write(b)
+	return err
 }
 
 func newMessageEncoder(w io.Writer, bufferSize int, enableCompression bool, s *ConnStats) *messageEncoder {
 	w = newWriterCounter(w, s)
 	bw := bufio.NewWriterSize(w, bufferSize)
+	var mainwriter = bw
 
 	ww := bw
 	var zw *flate.Writer
 	if enableCompression {
 		zw, _ = flate.NewWriter(bw, flate.BestSpeed)
 		ww = bufio.NewWriterSize(zw, bufferSize)
+		mainwriter = ww
 	}
 
-	return &messageEncoder{
-		e:  gob.NewEncoder(ww),
-		bw: bw,
-		zw: zw,
-		ww: ww,
-	}
+	return &messageEncoder{w: mainwriter, bw: bw, zw: zw, ww: ww}
 }
 
 type messageDecoder struct {
-	d  *gob.Decoder
+	buffer *proto.Buffer
 	zr io.ReadCloser
 }
 
@@ -96,8 +73,8 @@ func (d *messageDecoder) Close() error {
 	return nil
 }
 
-func (d *messageDecoder) Decode(msg interface{}) error {
-	return d.d.Decode(msg)
+func (d *messageDecoder) Decode(msg *Request) error {
+	return d.buffer.DecodeMessage(msg)
 }
 
 func newMessageDecoder(r io.Reader, bufferSize int, enableCompression bool, s *ConnStats) *messageDecoder {
@@ -111,8 +88,5 @@ func newMessageDecoder(r io.Reader, bufferSize int, enableCompression bool, s *C
 		rr = bufio.NewReaderSize(zr, bufferSize)
 	}
 
-	return &messageDecoder{
-		d:  gob.NewDecoder(rr),
-		zr: zr,
-	}
+	return &messageDecoder{buffer: proto.NewBuffer(),zr: zr}
 }

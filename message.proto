@@ -4,7 +4,7 @@ package gorpc;
 
 message Request {
 	string version = 2;
-	string id = 3;
+  int64 id = 3;
 	map<string, string> header = 4;
   bytes body = 5;
 	string method = 6;
@@ -13,8 +13,9 @@ message Request {
 
 message Response {
 	string version = 2;
-	string id = 3;
+	int64 id = 3;
 	map<string, string> header = 4;
 	bytes body = 5;
 	int32 code = 8;
+	string error = 9;
 }

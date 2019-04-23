@@ -19,7 +19,7 @@ import (
 // float64, etc. or arrays, slices and maps containing base Go types.
 //
 // Hint: use Dispatcher for HandlerFunc construction.
-type HandlerFunc func(clientAddr string, request interface{}) (response interface{})
+type HandlerFunc func(clientAddr string, request *Request) (response *Response)
 
 // Server implements RPC server.
 //
@@ -293,8 +293,8 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 
 type serverMessage struct {
 	ID         uint64
-	Request    interface{}
-	Response   interface{}
+	Request    *Request
+	Response   *Response
 	Error      string
 	ClientAddr string
 }
@@ -398,7 +398,7 @@ func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-cha
 	<-workersCh
 }
 
-func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request interface{}) (response interface{}, errStr string) {
+func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request *Request) (response *Response, errStr string) {
 	defer func() {
 		if x := recover(); x != nil {
 			stackTrace := make([]byte, 1<<20)

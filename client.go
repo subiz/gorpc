@@ -195,7 +195,7 @@ func (c *Client) PendingRequestsCount() int {
 // Hint: use Dispatcher for distinct calls' construction.
 //
 // Don't forget starting the client with Client.Start() before calling Client.Call().
-func (c *Client) Call(request interface{}) (response interface{}, err error) {
+func (c *Client) Call(request *Request) (*Response, error) {
 	return c.CallTimeout(request, c.RequestTimeout)
 }
 
@@ -214,8 +214,10 @@ func (c *Client) Call(request interface{}) (response interface{}, err error) {
 // Hint: use Dispatcher for distinct calls' construction.
 //
 // Don't forget starting the client with Client.Start() before calling Client.Call().
-func (c *Client) CallTimeout(request interface{}, timeout time.Duration) (response interface{}, err error) {
+func (c *Client) CallTimeout(request *Request, timeout time.Duration) (*Response, error) {
 	var m *AsyncResult
+	var err error
+	var response *Response
 	if m, err = c.callAsync(request, false, true); err != nil {
 		return nil, err
 	}
@@ -232,7 +234,7 @@ func (c *Client) CallTimeout(request interface{}, timeout time.Duration) (respon
 	}
 
 	releaseTimer(t)
-	return
+	return response, err
 }
 
 func acquireAsyncResult() *AsyncResult {
@@ -260,38 +262,13 @@ var asyncResultPool sync.Pool
 func getClientTimeoutError(c *Client, timeout time.Duration) error {
 	err := fmt.Errorf("gorpc.Client: [%s]. Cannot obtain response during timeout=%s", c.Addr, timeout)
 	c.LogError("%s", err)
-	return &ClientError{
-		Timeout: true,
-		err:     err,
-	}
-}
-
-// Send sends the given request to the server and doesn't wait for response.
-//
-// Since this is 'fire and forget' function, which never waits for response,
-// it cannot guarantee that the server receives and successfully processes
-// the given request. Though in most cases under normal conditions requests
-// should reach the server and it should successfully process them.
-// Send semantics is similar to UDP messages' semantics.
-//
-// The server may return arbitrary response on Send() request, but the response
-// is totally ignored.
-//
-// All the request types the client may use must be registered
-// via RegisterType() before starting the client.
-// There is no need in registering base Go types such as int, string, bool,
-// float64, etc. or arrays, slices and maps containing base Go types.
-//
-// Don't forget starting the client with Client.Start() before calling Client.Send().
-func (c *Client) Send(request interface{}) error {
-	_, err := c.callAsync(request, true, true)
-	return err
+	return &ClientError{Timeout: true, err: err}
 }
 
 // AsyncResult is a result returned from Client.CallAsync().
 type AsyncResult struct {
 	// The response can be read only after <-Done unblocks.
-	Response interface{}
+	Response *Response
 
 	// The error can be read only after <-Done unblocks.
 	// The error can be casted to ClientError.
@@ -300,7 +277,7 @@ type AsyncResult struct {
 	// Response and Error become available after <-Done unblocks.
 	Done <-chan struct{}
 
-	request  interface{}
+	request  *Request
 	t        time.Time
 	done     chan struct{}
 	canceled uint32
@@ -314,9 +291,7 @@ type AsyncResult struct {
 //
 // It is safe calling this function multiple times from concurrently
 // running goroutines.
-func (m *AsyncResult) Cancel() {
-	atomic.StoreUint32(&m.canceled, 1)
-}
+func (m *AsyncResult) Cancel() { atomic.StoreUint32(&m.canceled, 1) }
 
 func (m *AsyncResult) isCanceled() bool {
 	return atomic.LoadUint32(&m.canceled) != 0
@@ -346,11 +321,11 @@ func (m *AsyncResult) isCanceled() bool {
 //
 // Don't forget starting the client with Client.Start() before
 // calling Client.CallAsync().
-func (c *Client) CallAsync(request interface{}) (*AsyncResult, error) {
+func (c *Client) CallAsync(request *Request) (*AsyncResult, error) {
 	return c.callAsync(request, false, false)
 }
 
-func (c *Client) callAsync(request interface{}, skipResponse bool, usePool bool) (m *AsyncResult, err error) {
+func (c *Client) callAsync(request *Request, skipResponse bool, usePool bool) (m *AsyncResult, err error) {
 	if skipResponse {
 		usePool = true
 	}
