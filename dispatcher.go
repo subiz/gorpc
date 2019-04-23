@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -525,125 +524,6 @@ func (dc *DispatcherClient) CallAsync(funcName string, request interface{}) (*As
 	}()
 
 	return ar, nil
-}
-
-// DispatcherBatch allows grouping and executing multiple RPCs in a single batch.
-//
-// DispatcherBatch may be created via DispatcherClient.NewBatch().
-type DispatcherBatch struct {
-	lock sync.Mutex
-	c    *DispatcherClient
-	b    *Batch
-	ops  []*BatchResult
-}
-
-// NewBatch creates new RPC batch for the given DispatcherClient.
-//
-// It is safe creating multiple concurrent batches from a single client.
-func (dc *DispatcherClient) NewBatch() *DispatcherBatch {
-	return &DispatcherBatch{
-		c: dc,
-		b: dc.c.NewBatch(),
-	}
-}
-
-// Add ads new request to the RPC batch.
-//
-// The order of batched RPCs execution on the server is unspecified.
-//
-// All the requests added to the batch are sent to the server at once
-// when DispatcherBatch.Call*() is called.
-//
-// All the non-internal request and response types must be registered
-// via RegisterType() before the first call to this function.
-//
-// It is safe adding multiple requests to the same batch from concurrently
-// running goroutines.
-func (b *DispatcherBatch) Add(funcName string, request interface{}) *BatchResult {
-	return b.add(funcName, request, false)
-}
-
-// AddSkipResponse adds new request to the RPC batch and doesn't care
-// about the response.
-//
-// The order of batched RPCs execution on the server is unspecified.
-//
-// All the requests added to the batch are sent to the server at once
-// when DispatcherBatch.Call*() is called.
-//
-// All the non-internal request types must be registered via RegisterType()
-// before the first call to this function.
-//
-// It is safe adding multiple requests to the same batch from concurrently
-// running goroutines.
-func (b *DispatcherBatch) AddSkipResponse(funcName string, request interface{}) {
-	b.add(funcName, request, true)
-}
-
-func (b *DispatcherBatch) add(funcName string, request interface{}, skipResponse bool) *BatchResult {
-	req := b.c.getRequest(funcName, request)
-
-	var br *BatchResult
-	b.lock.Lock()
-	if !skipResponse {
-		br = &BatchResult{
-			ctx:  b.b.Add(req),
-			done: make(chan struct{}),
-		}
-		br.Done = br.done
-		b.ops = append(b.ops, br)
-	} else {
-		b.b.AddSkipResponse(req)
-	}
-	b.lock.Unlock()
-
-	return br
-}
-
-// Call calls all the RPCs added via DispatcherBatch.Add().
-//
-// The order of batched RPCs execution on the server is unspecified.
-// Usually batched RPCs are executed concurrently on the server.
-//
-// The caller may read all BatchResult contents returned
-// from DispatcherBatch.Add() after the Call returns.
-//
-// It is guaranteed that all <-BatchResult.Done channels are unblocked after
-// the Call returns.
-func (b *DispatcherBatch) Call() error {
-	return b.CallTimeout(b.c.c.RequestTimeout)
-}
-
-// CallTimeout calls all the RPCs added via DispatcherBatch.Add() and waits
-// for all the RPC responses during the given timeout.
-//
-// The order of batched RPCs execution on the server is unspecified.
-// Usually batched RPCs are executed concurrently on the server.
-//
-// The caller may read all BatchResult contents returned
-// from DispatcherBatch.Add() after the CallTimeout returns.
-//
-// It is guaranteed that all <-BatchResult.Done channels are unblocked after
-// the CallTimeout returns.
-func (b *DispatcherBatch) CallTimeout(timeout time.Duration) error {
-	b.lock.Lock()
-	bb := b.b
-	b.b = b.c.c.NewBatch()
-	ops := b.ops
-	b.ops = nil
-	b.lock.Unlock()
-
-	if err := bb.CallTimeout(timeout); err != nil {
-		return err
-	}
-
-	for _, op := range ops {
-		br := op.ctx.(*BatchResult)
-		op.Response, op.Error = getResponse(br.Response, br.Error)
-		close(op.done)
-	}
-
-	return nil
 }
 
 func (dc *DispatcherClient) getRequest(funcName string, request interface{}) *dispatcherRequest {

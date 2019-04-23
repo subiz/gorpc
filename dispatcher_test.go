@@ -327,19 +327,6 @@ func testUnknownFuncs(t *testing.T, dc *DispatcherClient) {
 	if err = dc.Send("FoobarFunc", "aaa"); err != nil {
 		t.Fatalf("Unepxected error: [%s]", err)
 	}
-
-	b := dc.NewBatch()
-	br := b.Add("UnknownFunc", 123)
-	b.AddSkipResponse("Aaaa", nil)
-	if err = b.Call(); err != nil {
-		t.Fatalf("Unexpected error: [%s]", err)
-	}
-	if br.Error == nil {
-		t.Fatalf("Unexpected non-nil error")
-	}
-	if br.Response != nil {
-		t.Fatalf("Expected nil response. Got %+v", br.Response)
-	}
 }
 
 func TestDispatcherEchoFuncCall(t *testing.T) {
@@ -1080,118 +1067,6 @@ func TestDispatcherServiceMultiple(t *testing.T) {
 	if service2.state != 42 {
 		t.Fatalf("Unexpected service2 state: %d. Expected 42", service2.state)
 	}
-}
-
-func TestDispatcherBatchSkipResponse(t *testing.T) {
-	d := NewDispatcher()
-
-	N := 10
-	ch := make(chan struct{}, N+1)
-	d.AddFunc("Echo", func(x int) int {
-		ch <- struct{}{}
-		return x
-	})
-
-	testDispatcherFunc(t, d, func(dc *DispatcherClient) {
-		b := dc.NewBatch()
-
-		for i := 0; i < N; i++ {
-			b.AddSkipResponse("Echo", i)
-		}
-		r := b.Add("Echo", 1234)
-
-		select {
-		case <-r.Done:
-			t.Fatalf("<-Done must be blocked until DispatcherBatch.Call() is called")
-		default:
-		}
-
-		if err := b.Call(); err != nil {
-			t.Fatalf("Error in DispatcherBatch.Call(): [%s]", err)
-		}
-
-		select {
-		case <-r.Done:
-		default:
-			t.Fatalf("<-Done must be unblocked after DispatcherBatch.Call()")
-		}
-
-		if r.Error != nil {
-			t.Fatalf("Unexpected error after DispatcherBatch.Call(): [%s]", r.Error)
-		}
-		if r.Response.(int) != 1234 {
-			t.Fatalf("Unexpected response returned: %+v. Expected 1234", r.Response)
-		}
-
-		for i := 0; i < N+1; i++ {
-			<-ch
-		}
-	})
-}
-
-func TestDispatcherBatchMultiFunc(t *testing.T) {
-	d := NewDispatcher()
-
-	d.AddFunc("Echo", func(x int) int { return x })
-	d.AddFunc("F42", func() int { return 42 })
-
-	testDispatcherFunc(t, d, func(dc *DispatcherClient) {
-		b := dc.NewBatch()
-
-		N := 10
-		echoResult := make([]*BatchResult, N)
-		f42Result := make([]*BatchResult, N)
-		for i := 0; i < N; i++ {
-			echoResult[i] = b.Add("Echo", i)
-			f42Result[i] = b.Add("F42", nil)
-
-			select {
-			case <-echoResult[i].Done:
-				t.Fatalf("<-Done must be blocked until DispatcherBatch.Call() is called")
-			default:
-			}
-
-			select {
-			case <-f42Result[i].Done:
-				t.Fatalf("<-Done must be blocked until DispatcherBatch.Call() is called")
-			default:
-			}
-		}
-
-		if err := b.Call(); err != nil {
-			t.Fatalf("error in DispatcherBatch.Call(): [%s]", err)
-		}
-
-		for i := 0; i < N; i++ {
-			r := echoResult[i]
-			select {
-			case <-r.Done:
-			default:
-				t.Fatalf("%d. <-Done must be unblocked after DispatcherBatch.Call()", i)
-			}
-			if r.Error != nil {
-				t.Fatalf("%d. Unexpected error in DispatcherBatch result: [%s]", i, r.Error)
-			}
-			if r.Response.(int) != i {
-				t.Fatalf("%d. Unexpected response in DispatcherBatch result: %+v. Expected %d", i, r.Response, i)
-			}
-		}
-
-		for i := 0; i < N; i++ {
-			r := f42Result[i]
-			select {
-			case <-r.Done:
-			default:
-				t.Fatalf("%d. <-Done must be unblocked after DispatcherBatch.Call()", i)
-			}
-			if r.Error != nil {
-				t.Fatalf("%d. Unexpected error in DispatcherBatch result: [%s]", i, r.Error)
-			}
-			if r.Response.(int) != 42 {
-				t.Fatalf("%d. Unexpected response in DispatcherBatch result: %+v. Expected 42", i, r.Response)
-			}
-		}
-	})
 }
 
 type testNilService struct{}
