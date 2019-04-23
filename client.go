@@ -416,24 +416,6 @@ func overflowClientError(c *Client) error {
 	}
 }
 
-func callAsyncRetry(c *Client, request interface{}, skipResponse bool, retriesCount int) (*AsyncResult, error) {
-	retriesCount++
-	for {
-		m, err := c.callAsync(request, skipResponse, false)
-		if err == nil {
-			return m, nil
-		}
-		if !err.(*ClientError).Overflow {
-			return nil, err
-		}
-		retriesCount--
-		if retriesCount <= 0 {
-			return nil, err
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 // ClientError is an error Client methods can return.
 type ClientError struct {
 	// Set if the error is timeout-related.
