@@ -191,7 +191,7 @@ func (c *Client) PendingRequestsCount() int {
 // Hint: use Dispatcher for distinct calls' construction.
 //
 // Don't forget starting the client with Client.Start() before calling Client.Call().
-func (c *Client) Call(request *Request) (*Response, error) {
+func (c *Client) Call(request Request) (Response, error) {
 	return c.CallTimeout(request, c.RequestTimeout)
 }
 
@@ -210,12 +210,12 @@ func (c *Client) Call(request *Request) (*Response, error) {
 // Hint: use Dispatcher for distinct calls' construction.
 //
 // Don't forget starting the client with Client.Start() before calling Client.Call().
-func (c *Client) CallTimeout(request *Request, timeout time.Duration) (*Response, error) {
+func (c *Client) CallTimeout(request Request, timeout time.Duration) (Response, error) {
 	var m *AsyncResult
 	var err error
-	var response *Response
+	var response Response
 	if m, err = c.callAsync(request, false, true); err != nil {
-		return nil, err
+		return Response{}, err
 	}
 
 	t := acquireTimer(timeout)
@@ -244,10 +244,8 @@ func acquireAsyncResult() *AsyncResult {
 var zeroTime time.Time
 
 func releaseAsyncResult(m *AsyncResult) {
-	m.Response = nil
 	m.Error = nil
 	m.Done = nil
-	m.request = nil
 	m.t = zeroTime
 	m.done = nil
 	asyncResultPool.Put(m)
@@ -264,7 +262,7 @@ func getClientTimeoutError(c *Client, timeout time.Duration) error {
 // AsyncResult is a result returned from Client.CallAsync().
 type AsyncResult struct {
 	// The response can be read only after <-Done unblocks.
-	Response *Response
+	Response Response
 
 	// The error can be read only after <-Done unblocks.
 	// The error can be casted to ClientError.
@@ -273,7 +271,7 @@ type AsyncResult struct {
 	// Response and Error become available after <-Done unblocks.
 	Done <-chan struct{}
 
-	request  *Request
+	request  Request
 	t        time.Time
 	done     chan struct{}
 	canceled uint32
@@ -317,11 +315,11 @@ func (m *AsyncResult) isCanceled() bool {
 //
 // Don't forget starting the client with Client.Start() before
 // calling Client.CallAsync().
-func (c *Client) CallAsync(request *Request) (*AsyncResult, error) {
+func (c *Client) CallAsync(request Request) (*AsyncResult, error) {
 	return c.callAsync(request, false, false)
 }
 
-func (c *Client) callAsync(request *Request, skipResponse bool, usePool bool) (m *AsyncResult, err error) {
+func (c *Client) callAsync(request Request, skipResponse bool, usePool bool) (m *AsyncResult, err error) {
 	if skipResponse {
 		usePool = true
 	}
@@ -609,7 +607,7 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 			releaseAsyncResult(m)
 		}
 
-		if err = e.Encode(request); err != nil {
+		if err = e.Encode(&request); err != nil {
 			err = fmt.Errorf("gorpc.Client: [%s]. Cannot send request to wire: [%s]", c.Addr, err)
 			return
 		}
@@ -631,8 +629,8 @@ func clientReader(c *Client, r io.Reader, pendingRequests map[uint64]*AsyncResul
 	defer d.Close()
 
 	for {
-		response := &Response{}
-		if err = d.Decode(response); err != nil {
+		response := Response{}
+		if err = d.Decode(&response); err != nil {
 			err = fmt.Errorf("gorpc.Client: [%s]. Cannot decode response: [%s]", c.Addr, err)
 			return
 		}
