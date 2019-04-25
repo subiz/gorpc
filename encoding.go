@@ -38,8 +38,7 @@ func newMessageEncoder(w io.Writer, bufferSize int, s *ConnStats) *messageEncode
 }
 
 type messageDecoder struct {
-	buffer *proto.Buffer
-	br     io.Reader
+	br io.Reader
 }
 
 func (d *messageDecoder) Close() error { return nil }
@@ -47,24 +46,20 @@ func (d *messageDecoder) Close() error { return nil }
 func (d *messageDecoder) Decode(msg proto.Message) error {
 	var bytes4 [4]byte
 	var sizeb = bytes4[:]
-	if _, err := d.br.Read(sizeb); err != nil {
+	if _, err := io.ReadAtLeast(d.br, sizeb, 4); err != nil {
 		return err
 	}
-
 	size := binary.LittleEndian.Uint32(sizeb)
 	payload := make([]byte, size, size)
-
-	if _, err := d.br.Read(payload); err != nil {
+	if _, err := io.ReadAtLeast(d.br, payload, int(size)); err != nil {
 		return err
 	}
 
-	d.buffer.Reset()
-	d.buffer.SetBuf(payload)
-	return d.buffer.DecodeMessage(msg)
+	return proto.Unmarshal(payload, msg)
 }
 
 func newMessageDecoder(r io.Reader, bufferSize int, s *ConnStats) *messageDecoder {
 	r = newReaderCounter(r, s)
 	br := bufio.NewReaderSize(r, bufferSize)
-	return &messageDecoder{buffer: proto.NewBuffer(nil), br: br}
+	return &messageDecoder{br: br}
 }
