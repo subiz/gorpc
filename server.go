@@ -350,7 +350,6 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 			select {
 			case workersCh <- struct{}{}:
 			case <-stopChan:
-				println("WTF2")
 				return
 			}
 		}
