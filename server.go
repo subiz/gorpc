@@ -19,7 +19,7 @@ import (
 // float64, etc. or arrays, slices and maps containing base Go types.
 //
 // Hint: use Dispatcher for HandlerFunc construction.
-type HandlerFunc func(clientAddr string, request *Request) (response *Response)
+type HandlerFunc func(clientAddr string, request Request) (response Response)
 
 // Server implements RPC server.
 //
@@ -241,7 +241,7 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 	zChan := make(chan bool, 1)
 	go func() {
 		var buf [1]byte
-		if _, err = conn.Read(buf[:]); err != nil {
+		if _, err = io.ReadAtLeast(conn, buf[:], 1); err != nil {
 			if stopping.Load() == nil {
 				s.LogError("gorpc.Server: [%s]->[%s]. Error when reading handshake from client: [%s]", clientAddr, s.Addr, err)
 			}
@@ -292,8 +292,8 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 
 type serverMessage struct {
 	ID         uint64
-	Request    *Request
-	Response   *Response
+	Request    Request
+	Response   Response
 	Error      string
 	ClientAddr string
 }
@@ -331,8 +331,8 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 	defer d.Close()
 
 	for {
-		request := &Request{}
-		if err := d.Decode(request); err != nil {
+		request := Request{}
+		if err := d.Decode(&request); err != nil {
 			if !isClientDisconnect(err) && !isServerStop(stopChan) {
 				s.LogError("gorpc.Server: [%s]->[%s]. Cannot decode request: [%s]", clientAddr, s.Addr, err)
 			}
@@ -350,6 +350,7 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 			select {
 			case workersCh <- struct{}{}:
 			case <-stopChan:
+				println("WTF2")
 				return
 			}
 		}
@@ -359,13 +360,13 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 
 func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-chan struct{}, m *serverMessage, workersCh <-chan struct{}) {
 	request := m.Request
-	m.Request = nil
+	m.Request = Request{}
 	clientAddr := m.ClientAddr
 	m.ClientAddr = ""
 	skipResponse := (m.ID == 0)
 
 	if skipResponse {
-		m.Response = nil
+		m.Response = Response{}
 		m.Error = ""
 		s.Stats.incRPCCalls()
 		serverMessagePool.Put(m)
@@ -394,7 +395,7 @@ func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-cha
 	<-workersCh
 }
 
-func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request *Request) (response *Response, errStr string) {
+func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request Request) (response Response, errStr string) {
 	defer func() {
 		if x := recover(); x != nil {
 			stackTrace := make([]byte, 1<<20)
@@ -447,11 +448,11 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 		response.Id = m.ID
 		response.Error = m.Error
 
-		m.Response = nil
+		m.Response = Response{}
 		m.Error = ""
 		serverMessagePool.Put(m)
 
-		if err := e.Encode(response); err != nil {
+		if err := e.Encode(&response); err != nil {
 			s.LogError("gorpc.Server: [%s]->[%s]. Cannot send response to wire: [%s]", clientAddr, s.Addr, err)
 			return
 		}
