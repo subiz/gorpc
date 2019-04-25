@@ -235,7 +235,6 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 		conn = newConn
 	}
 
-	var enabledCompression bool
 	var err error
 	var stopping atomic.Value
 
@@ -250,7 +249,7 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 		zChan <- (buf[0] != 0)
 	}()
 	select {
-	case enabledCompression = <-zChan:
+	case <-zChan:
 		if err != nil {
 			conn.Close()
 			return
@@ -269,10 +268,10 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 	stopChan := make(chan struct{})
 
 	readerDone := make(chan struct{})
-	go serverReader(s, conn, clientAddr, responsesChan, stopChan, readerDone, enabledCompression, workersCh)
+	go serverReader(s, conn, clientAddr, responsesChan, stopChan, readerDone, workersCh)
 
 	writerDone := make(chan struct{})
-	go serverWriter(s, conn, clientAddr, responsesChan, stopChan, writerDone, enabledCompression)
+	go serverWriter(s, conn, clientAddr, responsesChan, stopChan, writerDone)
 
 	select {
 	case <-readerDone:
@@ -319,7 +318,7 @@ func isServerStop(stopChan <-chan struct{}) bool {
 }
 
 func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<- *serverMessage,
-	stopChan <-chan struct{}, done chan<- struct{}, enabledCompression bool, workersCh chan struct{}) {
+	stopChan <-chan struct{}, done chan<- struct{}, workersCh chan struct{}) {
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -328,12 +327,12 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 		close(done)
 	}()
 
-	d := newMessageDecoder(r, s.RecvBufferSize, enabledCompression, &s.Stats)
+	d := newMessageDecoder(r, s.RecvBufferSize, &s.Stats)
 	defer d.Close()
 
-	var wr wireRequest
 	for {
-		if err := d.Decode(&wr); err != nil {
+		request := &Request{}
+		if err := d.Decode(request); err != nil {
 			if !isClientDisconnect(err) && !isServerStop(stopChan) {
 				s.LogError("gorpc.Server: [%s]->[%s]. Cannot decode request: [%s]", clientAddr, s.Addr, err)
 			}
@@ -341,12 +340,9 @@ func serverReader(s *Server, r io.Reader, clientAddr string, responsesChan chan<
 		}
 
 		m := serverMessagePool.Get().(*serverMessage)
-		m.ID = wr.ID
-		m.Request = wr.Request
+		m.ID = request.Id
+		m.Request = request
 		m.ClientAddr = clientAddr
-
-		wr.ID = 0
-		wr.Request = nil
 
 		select {
 		case workersCh <- struct{}{}:
@@ -411,18 +407,16 @@ func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, client
 	return
 }
 
-func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-chan *serverMessage, stopChan <-chan struct{}, done chan<- struct{}, enabledCompression bool) {
+func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-chan *serverMessage, stopChan <-chan struct{}, done chan<- struct{}) {
 	defer func() { close(done) }()
 
-	e := newMessageEncoder(w, s.SendBufferSize, enabledCompression, &s.Stats)
+	e := newMessageEncoder(w, s.SendBufferSize, &s.Stats)
 	defer e.Close()
 
 	var flushChan <-chan time.Time
 	t := time.NewTimer(s.FlushDelay)
-	var wr wireResponse
 	for {
 		var m *serverMessage
-
 		select {
 		case m = <-responsesChan:
 		default:
@@ -449,21 +443,18 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 			flushChan = getFlushChan(t, s.FlushDelay)
 		}
 
-		wr.ID = m.ID
-		wr.Response = m.Response
-		wr.Error = m.Error
+		response := m.Response
+		response.Id = m.ID
+		response.Error = m.Error
 
 		m.Response = nil
 		m.Error = ""
 		serverMessagePool.Put(m)
 
-		if err := e.Encode(wr); err != nil {
+		if err := e.Encode(response); err != nil {
 			s.LogError("gorpc.Server: [%s]->[%s]. Cannot send response to wire: [%s]", clientAddr, s.Addr, err)
 			return
 		}
-		wr.Response = nil
-		wr.Error = ""
-
 		s.Stats.incRPCCalls()
 	}
 }

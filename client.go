@@ -57,10 +57,6 @@ type Client struct {
 	// Default value is DefaultRequestTimeout.
 	RequestTimeout time.Duration
 
-	// Disable data compression.
-	// By default data compression is enabled.
-	DisableCompression bool
-
 	// Size of send buffer per each underlying connection in bytes.
 	// Default value is DefaultBufferSize.
 	SendBufferSize int
@@ -482,9 +478,6 @@ func clientHandleConnection(c *Client, conn io.ReadWriteCloser) {
 	}
 
 	var buf [1]byte
-	if !c.DisableCompression {
-		buf[0] = 1
-	}
 	_, err := conn.Write(buf[:])
 	if err != nil {
 		c.LogError("gorpc.Client: [%s]. Error when writing handshake to server: [%s]", c.Addr, err)
@@ -539,12 +532,11 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 	var err error
 	defer func() { done <- err }()
 
-	e := newMessageEncoder(w, c.SendBufferSize, !c.DisableCompression, &c.Stats)
+	e := newMessageEncoder(w, c.SendBufferSize, &c.Stats)
 	defer e.Close()
 
 	t := time.NewTimer(c.FlushDelay)
 	var flushChan <-chan time.Time
-	var wr wireRequest
 	var msgID uint64
 	for {
 		var m *AsyncResult
@@ -583,8 +575,10 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 			continue
 		}
 
+		request := m.request
+
 		if m.done == nil {
-			wr.ID = 0
+			request.Id = 0
 		} else {
 			msgID++
 			if msgID == 0 {
@@ -607,20 +601,18 @@ func clientWriter(c *Client, w io.Writer, pendingRequests map[uint64]*AsyncResul
 				return
 			}
 
-			wr.ID = msgID
+			request.Id = msgID
 		}
 
-		wr.Request = m.request
 		if m.done == nil {
 			c.Stats.incRPCCalls()
 			releaseAsyncResult(m)
 		}
 
-		if err = e.Encode(wr); err != nil {
+		if err = e.Encode(request); err != nil {
 			err = fmt.Errorf("gorpc.Client: [%s]. Cannot send request to wire: [%s]", c.Addr, err)
 			return
 		}
-		wr.Request = nil
 	}
 }
 
@@ -635,40 +627,36 @@ func clientReader(c *Client, r io.Reader, pendingRequests map[uint64]*AsyncResul
 		done <- err
 	}()
 
-	d := newMessageDecoder(r, c.RecvBufferSize, !c.DisableCompression, &c.Stats)
+	d := newMessageDecoder(r, c.RecvBufferSize, &c.Stats)
 	defer d.Close()
 
-	var wr wireResponse
 	for {
-		if err = d.Decode(&wr); err != nil {
+		response := &Response{}
+		if err = d.Decode(response); err != nil {
 			err = fmt.Errorf("gorpc.Client: [%s]. Cannot decode response: [%s]", c.Addr, err)
 			return
 		}
 
 		pendingRequestsLock.Lock()
-		m, ok := pendingRequests[wr.ID]
+		m, ok := pendingRequests[response.Id]
 		if ok {
-			delete(pendingRequests, wr.ID)
+			delete(pendingRequests, response.Id)
 		}
 		pendingRequestsLock.Unlock()
 
 		if !ok {
-			err = fmt.Errorf("gorpc.Client: [%s]. Unexpected msgID=[%d] obtained from server", c.Addr, wr.ID)
+			err = fmt.Errorf("gorpc.Client: [%s]. Unexpected msgID=[%d] obtained from server", c.Addr, response.Id)
 			return
 		}
 
 		atomic.AddUint32(&c.pendingRequestsCount, ^uint32(0))
+		m.Response = response
 
-		m.Response = wr.Response
-
-		wr.ID = 0
-		wr.Response = nil
-		if wr.Error != "" {
+		if response.Error != "" {
 			m.Error = &ClientError{
 				Server: true,
-				err:    fmt.Errorf("gorpc.Client: [%s]. Server error: [%s]", c.Addr, wr.Error),
+				err:    fmt.Errorf("gorpc.Client: [%s]. Server error: [%s]", c.Addr, response.Error),
 			}
-			wr.Error = ""
 		}
 
 		c.Stats.incRPCCalls()
