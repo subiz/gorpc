@@ -27,7 +27,6 @@ type ReverseServer struct {
 
 	lock            *sync.Mutex // protect clients_by_path and clients
 	clients_by_path map[string][]*Client
-	clients         map[string]*Client // client by client addr
 }
 
 // NewReverseServer creates a new ReverseServer object
@@ -35,11 +34,10 @@ func NewReverseServer() *ReverseServer {
 	return &ReverseServer{
 		lock:            &sync.Mutex{},
 		clients_by_path: make(map[string][]*Client),
-		clients:         make(map[string]*Client),
 	}
 }
 
-// Serve starts rpc server and blocks until it is stopped.
+// Serve starts reverse proxy tcp server and http server
 func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 	go fasthttp.ListenAndServe(http_addr, me.requestHandler)
 
@@ -54,36 +52,22 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 
 	// the main tcp accept loop
 	for {
-		conn, clientAddr, err := listener.Accept()
+		conn, _, err := listener.Accept()
 		if err != nil {
 			me.Stats.incAcceptErrors()
 			me.LogError("gorpc.Server: [%s]. Cannot accept new connection: [%s]", rpc_addr, err)
 			continue
 		}
 		me.Stats.incAcceptCalls()
-		go me.newConnection(conn, clientAddr)
+		go me.newConnection(conn)
 	}
 }
 
 var SLASH = []byte("/")
 
-func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
-	firstpath := bytes.Split(ctx.Path(), SLASH)[0]
-	host := ctx.Host()
-
-	route := string(append(host, firstpath...))
-	count := int(atomic.AddUint64(&me.requestcount, 1))
-	me.lock.Lock()
-	clients := me.clients_by_path[route]
-	if len(clients) == 0 {
-		me.lock.Unlock()
-		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
-		return
-	}
-	client := clients[count%len(clients)]
-	me.lock.Unlock()
-
+// convertRequest transforms an HTTP request to proto.Request
+// so we can send it through the wire using TCP protocol
+func convertRequest(ctx *fasthttp.RequestCtx) Request {
 	cookies := make(map[string][]byte)
 	ctx.Request.Header.VisitAllCookie(func(key, val []byte) { cookies[string(key)] = val })
 	headers := make(map[string][]byte)
@@ -94,7 +78,7 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		}
 		headers[key] = val
 	})
-	res, err := client.Call(Request{
+	return Request{
 		Version:     "0.1",
 		Body:        ctx.Request.Body(),
 		Method:      ctx.Request.Header.Method(),
@@ -103,8 +87,37 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		UserAgent:   ctx.Request.Header.UserAgent(),
 		Cookies:     cookies,
 		Headers:     headers,
-	})
+	}
+}
 
+// pickClient selects a client from the pools based on the given url route
+// it returns nil if there is no ready clients for the route
+func (me *ReverseServer) pickClient(route string) *Client {
+	// select the client
+	count := int(atomic.AddUint64(&me.requestcount, 1))
+	me.lock.Lock()
+	clients := me.clients_by_path[route]
+	if len(clients) == 0 {
+		me.lock.Unlock()
+		return nil
+	}
+	client := clients[count%len(clients)]
+	me.lock.Unlock()
+	return client
+}
+
+func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
+	firstpath := bytes.Split(ctx.Path(), SLASH)[1]
+	host := ctx.Host()
+	route := string(host) + "/" + string(firstpath)
+	client := me.pickClient(route)
+	if client == nil {
+		ctx.Response.Header.SetStatusCode(404)
+		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
+		return
+	}
+	// TODO: implement retry, circuit breaker
+	res, err := client.Call(convertRequest(ctx))
 	if err != nil {
 		ctx.Response.Header.SetStatusCode(500)
 		fmt.Fprintf(ctx, "internal err "+err.Error())
@@ -115,6 +128,7 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "internal err "+res.Error)
 		return
 	}
+
 	ctx.Response.Header.SetStatusCode(int(res.StatusCode))
 	for k, v := range res.Headers {
 		ctx.Response.Header.SetBytesV(k, v)
@@ -122,11 +136,10 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 	ctx.Response.SetBody(res.Body)
 }
 
-func (me *ReverseServer) newConnection(conn io.ReadWriteCloser, clientAddr string) {
+func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 	var dialed bool
 	var client *Client
 	client = &Client{
-		Addr: clientAddr,
 		Dial: func(_ string) (io.ReadWriteCloser, error) {
 			if !dialed {
 				dialed = true
@@ -151,7 +164,6 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser, clientAddr strin
 		},
 	}
 	client.Start()
-	me.clients[clientAddr] = client
 
 	// first message is from the server to the endpoint
 	// endpoint should return paths that its able to handle
