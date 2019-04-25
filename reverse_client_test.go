@@ -9,9 +9,10 @@ import (
 
 func TestReverseClient(t *testing.T) {
 
-	client := NewReverseClient([]string{"127.0.0.1:1992"}, func(clientAddr string, request Request) Response {
+	client := ReverseClient{ServerAddrs: []string{"127.0.0.1:1992"}}
+	client.Start(func(clientAddr string, request Request) Response {
 		if string(request.Uri) == "_status" {
-			b, _ := json.Marshal(&StatusResponse{Paths: []string{"ukachi.com"}})
+			b, _ := json.Marshal(&StatusResponse{Paths: []string{"ukachi.com/van"}})
 			println("GOT STATUS", string(b))
 
 			return Response{StatusCode: 200, Body: b}
@@ -19,6 +20,5 @@ func TestReverseClient(t *testing.T) {
 		fmt.Println("clientAddr", clientAddr, string(request.Method), string(request.Uri))
 		return Response{StatusCode: 200, Body: []byte("khoe khong")}
 	})
-	client.Start()
 	time.Sleep(100 * time.Hour)
 }
