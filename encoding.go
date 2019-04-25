@@ -2,91 +2,69 @@ package gorpc
 
 import (
 	"bufio"
-	"compress/flate"
+	"encoding/binary"
 	"github.com/golang/protobuf/proto"
 	"io"
 )
 
-type messageEncoder struct {
-	w  *bufio.Writer
-	bw *bufio.Writer
-	zw *flate.Writer
-	ww *bufio.Writer
-}
+type messageEncoder struct{ bw *bufio.Writer }
 
-func (e *messageEncoder) Close() error {
-	if e.zw != nil {
-		return e.zw.Close()
-	}
-	return nil
-}
+func (e *messageEncoder) Close() error { return nil }
 
-func (e *messageEncoder) Flush() error {
-	if e.zw != nil {
-		if err := e.ww.Flush(); err != nil {
-			return err
-		}
-		if err := e.zw.Flush(); err != nil {
-			return err
-		}
-	}
-	if err := e.bw.Flush(); err != nil {
-		return err
-	}
-	return nil
-}
+func (e *messageEncoder) Flush() error { return e.bw.Flush() }
 
-func (e *messageEncoder) Encode(msg *Request) error {
+func (e *messageEncoder) Encode(msg proto.Message) error {
 	b, err := proto.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	_, err = e.w.Write(b)
+	// first send the size of the payload
+	var bytes4 [4]byte
+	var sizeb = bytes4[:]
+	binary.LittleEndian.PutUint32(sizeb, uint32(len(b)))
+	if _, err := e.bw.Write(sizeb); err != nil {
+		return err
+	}
+
+	// then send the actual payload
+	_, err = e.bw.Write(b)
 	return err
 }
 
-func newMessageEncoder(w io.Writer, bufferSize int, enableCompression bool, s *ConnStats) *messageEncoder {
+func newMessageEncoder(w io.Writer, bufferSize int, s *ConnStats) *messageEncoder {
 	w = newWriterCounter(w, s)
 	bw := bufio.NewWriterSize(w, bufferSize)
-	var mainwriter = bw
-
-	ww := bw
-	var zw *flate.Writer
-	if enableCompression {
-		zw, _ = flate.NewWriter(bw, flate.BestSpeed)
-		ww = bufio.NewWriterSize(zw, bufferSize)
-		mainwriter = ww
-	}
-
-	return &messageEncoder{w: mainwriter, bw: bw, zw: zw, ww: ww}
+	return &messageEncoder{bw: bw}
 }
 
 type messageDecoder struct {
 	buffer *proto.Buffer
-	zr io.ReadCloser
+	br     io.Reader
 }
 
-func (d *messageDecoder) Close() error {
-	if d.zr != nil {
-		return d.zr.Close()
+func (d *messageDecoder) Close() error { return nil }
+
+func (d *messageDecoder) Decode(msg proto.Message) error {
+	var bytes4 [4]byte
+	var sizeb = bytes4[:]
+	if _, err := d.br.Read(sizeb); err != nil {
+		return err
 	}
-	return nil
-}
 
-func (d *messageDecoder) Decode(msg *Request) error {
+	size := binary.LittleEndian.Uint32(sizeb)
+	payload := make([]byte, size, size)
+
+	if _, err := d.br.Read(payload); err != nil {
+		return err
+	}
+
+	d.buffer.Reset()
+	d.buffer.SetBuf(payload)
 	return d.buffer.DecodeMessage(msg)
 }
 
-func newMessageDecoder(r io.Reader, bufferSize int, enableCompression bool, s *ConnStats) *messageDecoder {
+func newMessageDecoder(r io.Reader, bufferSize int, s *ConnStats) *messageDecoder {
 	r = newReaderCounter(r, s)
 	br := bufio.NewReaderSize(r, bufferSize)
-
-	rr := br
-	var zr io.ReadCloser
-	if enableCompression {
-		zr = flate.NewReader(br)
-		rr = bufio.NewReaderSize(zr, bufferSize)
-	}
-
-	return &messageDecoder{buffer: proto.NewBuffer(),zr: zr}
+	return &messageDecoder{buffer: proto.NewBuffer(nil), br: br}
 }
