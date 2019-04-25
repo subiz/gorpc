@@ -2,20 +2,27 @@ syntax = "proto3";
 
 package gorpc;
 
+message StatusResponse {
+	repeated string paths = 3;
+}
+
 message Request {
 	string version = 2;
-  uint64 id = 3;
-	map<string, string> header = 4;
-  bytes body = 5;
-	string method = 6;
-	string path = 7;
+	uint64 id = 3;
+	bytes uri = 4;
+	bytes method = 5;
+	bytes body = 6;
+	bytes content_type  = 7;
+	bytes user_agent = 8;
+	map<string, bytes> cookies = 9;
+	map<string, bytes> headers = 10;
 }
 
 message Response {
 	string version = 2;
 	uint64 id = 3;
-	map<string, string> header = 4;
+	int32 status_code = 4;
 	bytes body = 5;
-	int32 code = 8;
 	string error = 9;
+	map<string, bytes> headers = 10;
 }
