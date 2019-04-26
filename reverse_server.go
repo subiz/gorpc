@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/valyala/fasthttp"
 )
@@ -98,6 +99,7 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Headers:     headers,
 		RemoteAddr:  ip,
 		Referer:     string(ctx.Referer()),
+		Received:    time.Now().UnixNano() / 1e6,
 	}
 }
 

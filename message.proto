@@ -18,6 +18,7 @@ message Request {
 	map<string, bytes> headers = 10;
 	string remote_addr = 11;
 	string referer = 12;
+	int64 received = 15;
 }
 
 message Response {
