@@ -49,7 +49,7 @@ func (s *reverseClientServer) Serve(handler HandlerFunc) {
 		server := &Server{
 			Handler:          handler,
 			Listener:         newReverseListener(conn, clientAddr),
-			Concurrency:      1,
+			Concurrency:      DefaultConcurrency,
 			FlushDelay:       DefaultFlushDelay,
 			PendingResponses: DefaultPendingMessages,
 			SendBufferSize:   DefaultBufferSize,
