@@ -39,6 +39,7 @@ func NewReverseServer() *ReverseServer {
 
 // Serve starts reverse proxy tcp server and http server
 func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
+	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
 	go fasthttp.ListenAndServe(http_addr, me.requestHandler)
 
 	if me.LogError == nil {
@@ -50,6 +51,7 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 		panic(err)
 	}
 
+	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
 	// the main tcp accept loop
 	for {
 		conn, _, err := listener.Accept()
