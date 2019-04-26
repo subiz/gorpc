@@ -113,7 +113,7 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 	client := me.pickClient(route)
 	if client == nil {
 		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
+		fmt.Fprintf(ctx, "not found any client %s", route)
 		return
 	}
 	// TODO: implement retry, circuit breaker
