@@ -97,6 +97,7 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Cookies:     cookies,
 		Headers:     headers,
 		RemoteAddr:  ip,
+		Referer:     string(ctx.Referer()),
 	}
 }
 

@@ -22,9 +22,7 @@ bench-4-goprocs:
 bench-8-goprocs:
 	GOMAXPROCS=8 go test -test.bench=".*"
 
-compile:
-	/snap/bin/protoc --go_out=plugins=grpc:. *.proto
-
 build:
+	/snap/bin/protoc --go_out=plugins=grpc:. *.proto
 	cd cmd && go build
 	mv cmd/cmd server

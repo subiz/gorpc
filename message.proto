@@ -17,6 +17,7 @@ message Request {
 	map<string, bytes> cookies = 9;
 	map<string, bytes> headers = 10;
 	string remote_addr = 11;
+	string referer = 12;
 }
 
 message Response {
