@@ -10,12 +10,13 @@ message Request {
 	string version = 2;
 	uint64 id = 3;
 	bytes uri = 4;
-	bytes method = 5;
+	string method = 5;
 	bytes body = 6;
-	bytes content_type  = 7;
+	string content_type  = 7;
 	bytes user_agent = 8;
 	map<string, bytes> cookies = 9;
 	map<string, bytes> headers = 10;
+	string remote_addr = 11;
 }
 
 message Response {
