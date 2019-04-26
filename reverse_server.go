@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 
@@ -40,7 +41,11 @@ func NewReverseServer() *ReverseServer {
 // Serve starts reverse proxy tcp server and http server
 func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
-	go fasthttp.ListenAndServe(http_addr, me.requestHandler)
+	go func() {
+		if err := fasthttp.ListenAndServe(http_addr, me.requestHandler); err != nil {
+			fmt.Println(err)
+		}
+	}()
 
 	if me.LogError == nil {
 		me.LogError = errorLogger
@@ -80,15 +85,18 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		}
 		headers[key] = val
 	})
+
+	ip, _, _ := net.SplitHostPort(ctx.RemoteAddr().String())
 	return Request{
 		Version:     "0.1",
 		Body:        ctx.Request.Body(),
-		Method:      ctx.Request.Header.Method(),
+		Method:      string(ctx.Request.Header.Method()),
 		Uri:         ctx.Request.Header.RequestURI(),
-		ContentType: ctx.Request.Header.ContentType(),
+		ContentType: string(ctx.Request.Header.ContentType()),
 		UserAgent:   ctx.Request.Header.UserAgent(),
 		Cookies:     cookies,
 		Headers:     headers,
+		RemoteAddr:  ip,
 	}
 }
 
