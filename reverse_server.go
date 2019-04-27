@@ -100,6 +100,7 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		RemoteAddr:  ip,
 		Referer:     string(ctx.Referer()),
 		Received:    time.Now().UnixNano() / 1e6,
+		Path:        string(ctx.Path()),
 	}
 }
 

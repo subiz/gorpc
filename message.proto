@@ -19,6 +19,7 @@ message Request {
 	string remote_addr = 11;
 	string referer = 12;
 	int64 received = 15;
+	string path = 16;
 }
 
 message Response {
