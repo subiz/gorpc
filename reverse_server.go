@@ -91,8 +91,8 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 	return Request{
 		Version:     "0.1",
 		Body:        ctx.Request.Body(),
-		Method:      string(ctx.Request.Header.Method()),
-		Uri:         ctx.Request.Header.RequestURI(),
+		Method:      string(ctx.Method()),
+		Uri:         ctx.RequestURI(),
 		ContentType: string(ctx.Request.Header.ContentType()),
 		UserAgent:   ctx.Request.Header.UserAgent(),
 		Cookies:     cookies,
@@ -101,6 +101,7 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Referer:     string(ctx.Referer()),
 		Received:    time.Now().UnixNano() / 1e6,
 		Path:        string(ctx.Path()),
+		Host:        string(ctx.Host()),
 	}
 }
 

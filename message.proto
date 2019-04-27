@@ -20,6 +20,7 @@ message Request {
 	string referer = 12;
 	int64 received = 15;
 	string path = 16;
+	string host = 17;
 }
 
 message Response {
