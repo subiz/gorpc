@@ -42,9 +42,6 @@ message Cookie {
 	string path = 4;
 	string domain = 5;
 	int64 expired_sec = 6;
-
-	int64 max_age = 7;
 	bool secure = 8;
 	bool http_only = 9;
-	int64 same_site = 10;
 }
