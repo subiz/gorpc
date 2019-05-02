@@ -21,6 +21,8 @@ message Request {
 	int64 received = 15;
 	string path = 16;
 	string host = 17;
+	map<string, bytes> form = 18;
+	map<string, bytes> query = 19;
 }
 
 message Response {
