@@ -87,6 +87,12 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		headers[key] = val
 	})
 
+	query := make(map[string][]byte)
+	ctx.QueryArgs().VisitAll(func(key, val []byte) { query[string(key)] = val })
+
+	form := make(map[string][]byte)
+	ctx.PostArgs().VisitAll(func(key, val []byte) { form[string(key)] = val })
+
 	ip, _, _ := net.SplitHostPort(ctx.RemoteAddr().String())
 	return Request{
 		Version:     "0.1",
@@ -102,6 +108,8 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Received:    time.Now().UnixNano() / 1e6,
 		Path:        string(ctx.Path()),
 		Host:        string(ctx.Host()),
+		Query:       query,
+		Form:        form,
 	}
 }
 
@@ -143,12 +151,30 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "internal err "+res.Error)
 		return
 	}
+	if res.ContentType != "" {
+		ctx.Response.Header.SetContentType(res.ContentType)
+	}
+
+	for _, cookie := range res.Cookies {
+		ctx.Response.Header.Cookie(toFastHttpCookie(cookie))
+	}
 
 	ctx.Response.Header.SetStatusCode(int(res.StatusCode))
 	for k, v := range res.Headers {
 		ctx.Response.Header.SetBytesV(k, v)
 	}
 	ctx.Response.SetBody(res.Body)
+}
+
+func toFastHttpCookie(cookie *Cookie) *fasthttp.Cookie {
+	cook := &fasthttp.Cookie{}
+	cook.SetHTTPOnly(cookie.GetHttpOnly())
+	cook.SetKey(cookie.GetName())
+	cook.SetValueBytes(cookie.GetValue())
+	cook.SetPath(cookie.GetPath())
+	cook.SetSecure(cookie.GetSecure())
+	cook.SetExpire(time.Unix(cookie.GetExpiredSec(), 0))
+	return cook
 }
 
 func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
