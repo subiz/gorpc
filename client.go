@@ -106,6 +106,8 @@ type Client struct {
 
 	clientStopChan chan struct{}
 	stopWg         sync.WaitGroup
+
+	IsStopped bool
 }
 
 // Start starts rpc client. Establishes connection to the server on Client.Addr.
