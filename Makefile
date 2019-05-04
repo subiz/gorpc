@@ -26,3 +26,8 @@ build:
 	/snap/bin/protoc --go_out=plugins=grpc:. *.proto
 	cd cmd && go build -ldflags="-s -w"
 	mv cmd/cmd server
+
+deploy: build
+	scp server root@dev.subiz.net:/opt/gorpc
+	scp gorpc.json root@dev.subiz.net:/etc/gorpc.json
+	ssh -t -t root@dev.subiz.net  /opt/run.sh
