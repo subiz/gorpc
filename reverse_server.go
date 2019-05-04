@@ -49,6 +49,7 @@ func NewReverseServer() *ReverseServer {
 			root := &node{}
 			s.roots[domain] = root
 			for _, path := range r.GetPaths() {
+				println("ADD ROUTE", domain, path)
 				root.addRoute(path, &handle{})
 			}
 		}
@@ -134,19 +135,20 @@ func convertRequest(ctx *fasthttp.RequestCtx, ps map[string]string) Request {
 func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 	// firstpath := bytes.Split(ctx.Path(), SLASH)[1]
 	// host := ctx.Host()
-	host := string(ctx.Method())
-	path := string(ctx.Host()) + "|" + host + "|" + string(ctx.Path())
+	host := string(ctx.Host())
+	path := string(ctx.Path())
 
 	root := me.roots[host]
 	if root == nil {
 		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found %s", ctx.Path())
+		fmt.Fprintf(ctx, "not found [%s] %s", host, ctx.Path())
 		return
 	}
 
 	clients := me.def_clients[host]
 	h, ps, _ := root.getValue(path)
 	if h != nil {
+		println("XXXXXXXXX no h", )
 		clients = h.clients
 	}
 
@@ -226,6 +228,7 @@ func (me *ReverseServer) cleanFailedClients() {
 		}
 		me.def_clients[k] = newclients
 	}
+	me.lock.Unlock()
 }
 
 func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
@@ -265,6 +268,7 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 		return
 	}
 
+
 	me.lock.Lock()
 	for _, domain := range status.GetDomains() {
 		root := me.roots[domain]
@@ -281,7 +285,6 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 
 			h, _, _ := root.getValue(path)
 			if h == nil {
-				fmt.Println("ignoring domain", domain)
 				continue
 			}
 			h.clients = appendOnce(h.clients, client)
@@ -291,9 +294,9 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 }
 
 func loadConfig() Config {
-	b, err := ioutil.ReadFile("/etc/gorpc/config.json")
+	b, err := ioutil.ReadFile("/etc/gorpc.json")
 	if err != nil {
-		fmt.Println("/etc/gorpc/config.json not found")
+		fmt.Println("/etc/gorpc.json not found")
 		panic(err)
 	}
 	config := Config{}
