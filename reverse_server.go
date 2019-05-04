@@ -74,7 +74,6 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 		panic(err)
 	}
 
-	go me.cleanFailedClient()
 	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
 	// the main tcp accept loop
 	for {
@@ -156,7 +155,6 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
 		return
 	}
-
 	count := int(atomic.AddUint64(&me.requestcount, 1))
 	me.lock.Lock()
 	client := clients[count%len(clients)]
@@ -201,38 +199,32 @@ func toFastHttpCookie(cookie *Cookie) *fasthttp.Cookie {
 	return cook
 }
 
-func (me *ReverseServer) cleanFailedClient() {
-	for {
-		// removing client from the routing map
-		me.lock.Lock()
-		for _, r := range me.config.GetRules() {
-			for _, domain := range r.GetDomains() {
-				root := me.roots[domain]
-				for _, path := range r.GetPaths() {
-					handle, _, _ := root.getValue(path)
-					newclients := make([]*Client, 0)
-					for _, client := range handle.clients {
-						if !client.IsStopped {
-							newclients = append(newclients, client)
-						}
+func (me *ReverseServer) cleanFailedClients() {
+	me.lock.Lock()
+	for _, r := range me.config.GetRules() {
+		for _, domain := range r.GetDomains() {
+			root := me.roots[domain]
+			for _, path := range r.GetPaths() {
+				handle, _, _ := root.getValue(path)
+				newclients := make([]*Client, 0)
+				for _, client := range handle.clients {
+					if !client.IsStopped {
+						newclients = append(newclients, client)
 					}
-					handle.clients = newclients
 				}
+				handle.clients = newclients
 			}
 		}
+	}
 
-		for k, clients := range me.def_clients {
-			newclients := make([]*Client, 0)
-			for _, client := range clients {
-				if !client.IsStopped {
-					newclients = append(newclients, client)
-				}
+	for k, clients := range me.def_clients {
+		newclients := make([]*Client, 0)
+		for _, client := range clients {
+			if !client.IsStopped {
+				newclients = append(newclients, client)
 			}
-			me.def_clients[k] = newclients
 		}
-
-		me.lock.Unlock()
-		time.Sleep(1 * time.Minute)
+		me.def_clients[k] = newclients
 	}
 }
 
@@ -249,6 +241,7 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 			// because we are unable to reconnect to the NAT hided api server
 			go client.Stop()
 			client.IsStopped = true
+			me.cleanFailedClients()
 			return nil, fmt.Errorf("STOPEED")
 		},
 	}
