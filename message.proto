@@ -2,8 +2,19 @@ syntax = "proto3";
 
 package gorpc;
 
-message StatusResponse {
+message PathConfig {
+	repeated string domains = 2;
 	repeated string paths = 3;
+}
+
+message Config {
+  repeated PathConfig rules = 2;
+}
+
+message StatusResponse {
+	repeated string unsed_paths = 3;
+	repeated string domains = 4;
+	repeated string paths = 5;
 }
 
 message Request {
@@ -14,8 +25,8 @@ message Request {
 	bytes body = 6;
 	string content_type = 7;
 	bytes user_agent = 8;
-	map<string, bytes> cookies = 9;
-	map<string, bytes> headers = 10;
+	map<string, bytes> cookie = 9;
+	map<string, bytes> header = 10;
 	string remote_addr = 11;
 	string referer = 12;
 	int64 received = 15;
@@ -23,6 +34,7 @@ message Request {
 	string host = 17;
 	map<string, bytes> form = 18;
 	map<string, bytes> query = 19;
+	map<string, string> param = 20;
 }
 
 message Response {
@@ -31,7 +43,7 @@ message Response {
 	int32 status_code = 4;
 	bytes body = 5;
 	string error = 9;
-	map<string, bytes> headers = 10;
+	map<string, bytes> header = 10;
 	string content_type = 11;
 	repeated Cookie cookies = 12;
 }
