@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -27,16 +28,32 @@ type ReverseServer struct {
 
 	requestcount uint64 // atomic, number of request sent, used to round robin
 
-	lock            *sync.Mutex // protect clients_by_path and clients
-	clients_by_path map[string][]*Client
+	lock        *sync.Mutex // protect roots and def_clients
+	roots       map[string]*node
+	def_clients map[string][]*Client
+
+	config Config
 }
 
 // NewReverseServer creates a new ReverseServer object
 func NewReverseServer() *ReverseServer {
-	return &ReverseServer{
-		lock:            &sync.Mutex{},
-		clients_by_path: make(map[string][]*Client),
+	s := &ReverseServer{
+		lock:        &sync.Mutex{},
+		roots:       make(map[string]*node),
+		def_clients: make(map[string][]*Client),
+		config:      loadConfig(),
 	}
+
+	for _, r := range s.config.GetRules() {
+		for _, domain := range r.GetDomains() {
+			root := &node{}
+			s.roots[domain] = root
+			for _, path := range r.GetPaths() {
+				root.addRoute(path, &handle{})
+			}
+		}
+	}
+	return s
 }
 
 // Serve starts reverse proxy tcp server and http server
@@ -57,6 +74,7 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 		panic(err)
 	}
 
+	go me.cleanFailedClient()
 	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
 	// the main tcp accept loop
 	for {
@@ -75,7 +93,7 @@ var SLASH = []byte("/")
 
 // convertRequest transforms an HTTP request to proto.Request
 // so we can send it through the wire using TCP protocol
-func convertRequest(ctx *fasthttp.RequestCtx) Request {
+func convertRequest(ctx *fasthttp.RequestCtx, ps map[string]string) Request {
 	cookies := make(map[string][]byte)
 	ctx.Request.Header.VisitAllCookie(func(key, val []byte) { cookies[string(key)] = val })
 	headers := make(map[string][]byte)
@@ -101,8 +119,8 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Uri:         ctx.RequestURI(),
 		ContentType: string(ctx.Request.Header.ContentType()),
 		UserAgent:   ctx.Request.Header.UserAgent(),
-		Cookies:     cookies,
-		Headers:     headers,
+		Cookie:      cookies,
+		Header:      headers,
 		RemoteAddr:  ip,
 		Referer:     string(ctx.Referer()),
 		Received:    time.Now().UnixNano() / 1e6,
@@ -110,37 +128,43 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Host:        string(ctx.Host()),
 		Query:       query,
 		Form:        form,
+		Param:       ps,
 	}
-}
-
-// pickClient selects a client from the pools based on the given url route
-// it returns nil if there is no ready clients for the route
-func (me *ReverseServer) pickClient(route string) *Client {
-	// select the client
-	count := int(atomic.AddUint64(&me.requestcount, 1))
-	me.lock.Lock()
-	clients := me.clients_by_path[route]
-	if len(clients) == 0 {
-		me.lock.Unlock()
-		return nil
-	}
-	client := clients[count%len(clients)]
-	me.lock.Unlock()
-	return client
 }
 
 func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
-	firstpath := bytes.Split(ctx.Path(), SLASH)[1]
-	host := ctx.Host()
-	route := string(host) + "/" + string(firstpath)
-	client := me.pickClient(route)
-	if client == nil {
+	// firstpath := bytes.Split(ctx.Path(), SLASH)[1]
+	// host := ctx.Host()
+	host := string(ctx.Method())
+	path := string(ctx.Host()) + "|" + host + "|" + string(ctx.Path())
+
+	root := me.roots[host]
+	if root == nil {
 		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s", route)
+		fmt.Fprintf(ctx, "not found %s", ctx.Path())
 		return
 	}
+
+	clients := me.def_clients[host]
+	h, ps, _ := root.getValue(path)
+	if h != nil {
+		clients = h.clients
+	}
+
+	if len(clients) == 0 {
+		ctx.Response.Header.SetStatusCode(404)
+		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
+		return
+	}
+
+	count := int(atomic.AddUint64(&me.requestcount, 1))
+	me.lock.Lock()
+	client := clients[count%len(clients)]
+	me.lock.Unlock()
+
 	// TODO: implement retry, circuit breaker
-	res, err := client.Call(convertRequest(ctx))
+	res, err := client.Call(convertRequest(ctx, ps))
+
 	if err != nil {
 		ctx.Response.Header.SetStatusCode(500)
 		fmt.Fprintf(ctx, "internal err "+err.Error())
@@ -160,7 +184,7 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	ctx.Response.Header.SetStatusCode(int(res.StatusCode))
-	for k, v := range res.Headers {
+	for k, v := range res.Header {
 		ctx.Response.Header.SetBytesV(k, v)
 	}
 	ctx.Response.SetBody(res.Body)
@@ -177,6 +201,41 @@ func toFastHttpCookie(cookie *Cookie) *fasthttp.Cookie {
 	return cook
 }
 
+func (me *ReverseServer) cleanFailedClient() {
+	for {
+		// removing client from the routing map
+		me.lock.Lock()
+		for _, r := range me.config.GetRules() {
+			for _, domain := range r.GetDomains() {
+				root := me.roots[domain]
+				for _, path := range r.GetPaths() {
+					handle, _, _ := root.getValue(path)
+					newclients := make([]*Client, 0)
+					for _, client := range handle.clients {
+						if !client.IsStopped {
+							newclients = append(newclients, client)
+						}
+					}
+					handle.clients = newclients
+				}
+			}
+		}
+
+		for k, clients := range me.def_clients {
+			newclients := make([]*Client, 0)
+			for _, client := range clients {
+				if !client.IsStopped {
+					newclients = append(newclients, client)
+				}
+			}
+			me.def_clients[k] = newclients
+		}
+
+		me.lock.Unlock()
+		time.Sleep(1 * time.Minute)
+	}
+}
+
 func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 	var dialed bool
 	var client *Client
@@ -189,18 +248,7 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
 			go client.Stop()
-
-			// removing client from the routing map
-			me.lock.Lock()
-			for k, clients := range me.clients_by_path {
-				for i, c := range clients {
-					if c == client {
-						clients = append(clients[:i], clients[i+1:]...)
-					}
-				}
-				me.clients_by_path[k] = clients
-			}
-			me.lock.Unlock()
+			client.IsStopped = true
 			return nil, fmt.Errorf("STOPEED")
 		},
 	}
@@ -225,9 +273,61 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 	}
 
 	me.lock.Lock()
-	for _, p := range status.GetPaths() {
-		clients := me.clients_by_path[p]
-		me.clients_by_path[p] = append(clients, client)
+	for _, domain := range status.GetDomains() {
+		root := me.roots[domain]
+		if root == nil {
+			fmt.Println("ignoring domain", domain)
+			continue
+		}
+
+		for _, path := range status.GetPaths() {
+			if path == "" { // no route
+				me.def_clients[domain] = appendOnce(me.def_clients[domain], client)
+				continue
+			}
+
+			h, _, _ := root.getValue(path)
+			if h == nil {
+				fmt.Println("ignoring domain", domain)
+				continue
+			}
+			h.clients = appendOnce(h.clients, client)
+		}
 	}
 	me.lock.Unlock()
+}
+
+func loadConfig() Config {
+	b, err := ioutil.ReadFile("/etc/gorpc/config.json")
+	if err != nil {
+		fmt.Println("/etc/gorpc/config.json not found")
+		panic(err)
+	}
+	config := Config{}
+	if err := json.Unmarshal(b, &config); err != nil {
+		fmt.Println("invalid config")
+		panic(err)
+	}
+	return config
+}
+
+type handle struct {
+	clients []*Client
+}
+type Handle *handle
+
+type Params map[string]string
+
+func appendOnce(clients []*Client, client *Client) []*Client {
+	isexisted := false
+	for _, oldclient := range clients {
+		if oldclient == client {
+			isexisted = true
+			break
+		}
+	}
+	if !isexisted {
+		clients = append(clients, client)
+	}
+	return clients
 }
