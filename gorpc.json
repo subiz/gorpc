@@ -1,0 +1,18 @@
+{
+	"rules": [
+		{
+			"domains": ["api.subiz.net", "apiv4.subiz.net", "apiv4.subiz.com"],
+			"paths": ["/ping", "/4.0/*name"]
+		},
+		{
+			"domains": ["app.subiz.net", "app.subiz.com"],
+			"paths": [
+				"/apps/fabikon",
+				"/apps/mailkon",
+				"/apps/subot-reply",
+				"/api",
+				"/v4"
+			]
+		}
+	]
+}
