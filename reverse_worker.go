@@ -7,41 +7,35 @@ import (
 	"time"
 )
 
-type ReverseClient struct {
-	ServerAddrs []string // list of all server address
-}
-
-func (c *ReverseClient) Start(handler HandlerFunc) {
-	for _, addr := range c.ServerAddrs {
-		server := &reverseClientServer{ServerAddr: addr}
+// Start makes connection to and starts waiting request from the proxy
+func StartReverseWorker(proxy_addrs []string, handler HandlerFunc) {
+	for _, addr := range proxy_addrs {
 		go func(addr string) {
+			worker := &reverseWorker{}
 			for {
-				server.Serve(handler)
-				server.Stop()
+				worker.Serve(addr, handler)
+				worker.Stop()
 				fmt.Println("disconnected from " + addr + " .retry in 2 sec")
 				time.Sleep(2 * time.Second)
 			}
 		}(addr)
 	}
+	for ; ; time.Sleep(10 * time.Minute) {
+	} // just sleep forever
 }
 
-// Server implements RPC server.
-//
-// Default server settings are optimized for high load, so don't override
-// them without valid reason.
-type reverseClientServer struct {
-	ServerAddr     string
+type reverseWorker struct {
 	serverStopChan chan struct{}
 }
 
 // Serve starts rpc server and blocks until it stopped.
-func (s *reverseClientServer) Serve(handler HandlerFunc) {
+func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
 	if s.serverStopChan != nil {
 		panic("gorpc.Server: --- server is already running. Stop it before starting it again")
 	}
 	s.serverStopChan = make(chan struct{})
 	end := make(chan bool)
-	client := &Client{Addr: s.ServerAddr, Dial: defaultDial}
+	client := &Client{Addr: proxyaddr, Dial: defaultDial}
 
 	connC := make(chan io.ReadWriteCloser, 1)
 	client.OnConnect = func(clientAddr string, conn io.ReadWriteCloser) (io.ReadWriteCloser, error) {
@@ -81,7 +75,7 @@ func (s *reverseClientServer) Serve(handler HandlerFunc) {
 }
 
 // Stop stops rpc server. Stopped server can be started again.
-func (s *reverseClientServer) Stop() {
+func (s *reverseWorker) Stop() {
 	close(s.serverStopChan)
 	s.serverStopChan = nil
 }
