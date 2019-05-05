@@ -1,5 +1,5 @@
 {
-	"rules": [
+	"hosts": [
 		{
 			"domains": ["api.subiz.net", "apiv4.subiz.net", "apiv4.subiz.com"],
 			"paths": ["/ping", "/4.0/*name"]
@@ -7,11 +7,12 @@
 		{
 			"domains": ["app.subiz.net", "app.subiz.com"],
 			"paths": [
-				"/apps/fabikon",
-				"/apps/mailkon",
-				"/apps/subot-reply",
-				"/api",
-				"/v4"
+				"/apps/fabikon/*name",
+				"/apps/mailkon/*name",
+				"/apps/subot-reply/*name",
+				"/apps/endchat-bot/*name",
+				"/api/*name",
+				"/v4/*name"
 			]
 		}
 	]

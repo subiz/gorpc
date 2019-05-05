@@ -14,8 +14,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// ReverseServer proxied HTTP requests to its behine-NAT workers
-type ReverseServer struct {
+// ReverseProxy proxied HTTP requests to its behine-NAT workers
+type ReverseProxy struct {
 	// LogError is used for error logging.
 	// By default the function set via SetErrorLogger() is used.
 	LogError LoggerFunc
@@ -41,16 +41,18 @@ type ReverseServer struct {
 	defaults map[string]Handle
 
 	// holds all routing rules
-	config Config
+	config *Config
 }
 
-// NewReverseServer setups a new ReverseServer server
+// NewReverseProxy setups a new ReverseProxy server
 // The configuration in /etc/gorpc.json will be loaded
 // After this, user can start the server by calling Serve().
-func NewReverseServer() *ReverseServer {
-	config := loadConfig()
+func NewReverseProxy(config *Config) *ReverseProxy {
+	if config == nil {
+		config = loadConfig()
+	}
 
-	s := &ReverseServer{
+	s := &ReverseProxy{
 		lock:     &sync.Mutex{},
 		rules:    make(map[string]*node),
 		defaults: make(map[string]Handle),
@@ -58,11 +60,11 @@ func NewReverseServer() *ReverseServer {
 	}
 
 	// register
-	for _, r := range config.GetRules() {
-		for _, domain := range r.GetDomains() {
+	for _, host := range config.GetHosts() {
+		for _, domain := range host.GetDomains() {
 			rule := &node{}
 			s.rules[domain] = rule
-			for _, path := range r.GetPaths() {
+			for _, path := range host.GetPaths() {
 				println("ADD ROUTE", domain, path)
 				rule.addRoute(path, &handle{})
 			}
@@ -74,7 +76,7 @@ func NewReverseServer() *ReverseServer {
 }
 
 // Serve starts reverse proxy tcp server and http server
-func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
+func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
 	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
 	go func() {
 		if err := fasthttp.ListenAndServe(http_addr, me.handleHTTPRequest); err != nil {
@@ -151,7 +153,7 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 
 // handleHTTPRequest received a HTTP request, forwarded it to matched workers
 // then sent back response to the client
-func (me *ReverseServer) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
+func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	domain, path := string(ctx.Host()), string(ctx.Path())
 
 	// find the matched workers for request domain and path
@@ -215,10 +217,10 @@ func toFastHTTPCookie(cookie *Cookie) *fasthttp.Cookie {
 // TODO: this function is slow, it scan through all paths in rule, all workers
 // when we call this function every time a client is disconnected, we may create
 // a bottleneck. I leave it for now but we should must measure it more carefully
-func (me *ReverseServer) cleanFailedWorkers() {
+func (me *ReverseProxy) cleanFailedWorkers() {
 	me.lock.Lock()
-	for _, r := range me.config.GetRules() {
-		for _, domain := range r.GetDomains() {
+	for _, host := range me.config.GetHosts() {
+		for _, domain := range host.GetDomains() {
 			// remove failed worker in defaults
 			newworkers := make([]*Client, 0)
 			defhandler := me.defaults[domain]
@@ -231,7 +233,7 @@ func (me *ReverseServer) cleanFailedWorkers() {
 
 			// remove failed workers in rules
 			rule := me.rules[domain]
-			for _, path := range r.GetPaths() {
+			for _, path := range host.GetPaths() {
 				handler, _, _ := rule.getValue(path)
 				newworkers := make([]*Client, 0)
 				for _, client := range handler.workers {
@@ -249,7 +251,7 @@ func (me *ReverseServer) cleanFailedWorkers() {
 // handleNewWorker registers a new worker to the server
 // this function is called after after a worker has established a new
 // connection with the server.
-func (me *ReverseServer) handleNewWorker(conn io.ReadWriteCloser) {
+func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	var dialed bool
 	var worker *Client
 	worker = &Client{
@@ -312,14 +314,14 @@ func (me *ReverseServer) handleNewWorker(conn io.ReadWriteCloser) {
 // this function panic if the file is not found or contains malform content
 // configuration format must follows message Config in ./message.proto. See
 // ./gorpc.json for an example.
-func loadConfig() Config {
+func loadConfig() *Config {
 	b, err := ioutil.ReadFile("/etc/gorpc.json")
 	if err != nil {
 		fmt.Println("/etc/gorpc.json not found")
 		panic(err)
 	}
-	config := Config{}
-	if err := json.Unmarshal(b, &config); err != nil {
+	config := &Config{}
+	if err := json.Unmarshal(b, config); err != nil {
 		fmt.Println("invalid config")
 		panic(err)
 	}

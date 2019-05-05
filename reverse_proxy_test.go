@@ -5,6 +5,8 @@ import (
 )
 
 func TestReverseServer(t *testing.T) {
-	server := NewReverseServer()
+	server := NewReverseProxy(&Config{
+		Hosts: []*Host{},
+	})
 	server.Serve(":1992", ":1995")
 }

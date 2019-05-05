@@ -1,8 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"flag"
+	"fmt"
 	"github.com/subiz/gorpc"
 )
 
@@ -12,6 +12,6 @@ func main() {
 	var http_addr = flag.String("http", ":80", "address for the Http server")
 	flag.Parse()
 
-	server := gorpc.NewReverseServer()
+	server := gorpc.NewReverseProxy(nil)
 	server.Serve(*rpc_addr, *http_addr)
 }
