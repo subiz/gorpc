@@ -440,3 +440,5 @@ walk: // outer loop for walking the tree
 		return
 	}
 }
+
+type Params map[string]string

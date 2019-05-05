@@ -14,44 +14,60 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ReverseServer proxied HTTP requests to its behine-NAT workers
 type ReverseServer struct {
 	// LogError is used for error logging.
-	//
 	// By default the function set via SetErrorLogger() is used.
 	LogError LoggerFunc
 
 	// Connection statistics.
-	//
 	// The stats doesn't reset automatically. Feel free resetting it
 	// any time you wish.
 	Stats ConnStats
 
-	requestcount uint64 // atomic, number of request sent, used to round robin
+	// keeps track of total request proxied
+	requestcount uint64
 
-	lock        *sync.Mutex // protect roots and def_clients
-	roots       map[string]*node
-	def_clients map[string][]*Client
+	// protects array of workers inside 'rules' and 'defaults'
+	// we intentionally only read 'rules' and 'defaults' after initialized them,
+	// since maps allow concurrent read with no write, so we don't have to lock
+	// when use them, but the value inside them changed often when workers are
+	// connected or disconnected, therfore it need to be protected.
+	lock *sync.Mutex
+	// map domain to its routing rules, rules is represent as root of a tree
+	rules map[string]*node
+	// map domain with its default workers, those workers will handle requests
+	// which doesn't match any rules defined in roots for a givien domain
+	defaults map[string]Handle
 
+	// holds all routing rules
 	config Config
 }
 
-// NewReverseServer creates a new ReverseServer object
+// NewReverseServer setups a new ReverseServer server
+// The configuration in /etc/gorpc.json will be loaded
+// After this, user can start the server by calling Serve().
 func NewReverseServer() *ReverseServer {
+	config := loadConfig()
+
 	s := &ReverseServer{
-		lock:        &sync.Mutex{},
-		roots:       make(map[string]*node),
-		def_clients: make(map[string][]*Client),
-		config:      loadConfig(),
+		lock:     &sync.Mutex{},
+		rules:    make(map[string]*node),
+		defaults: make(map[string]Handle),
+		config:   config,
 	}
 
-	for _, r := range s.config.GetRules() {
+	// register
+	for _, r := range config.GetRules() {
 		for _, domain := range r.GetDomains() {
-			root := &node{}
-			s.roots[domain] = root
+			rule := &node{}
+			s.rules[domain] = rule
 			for _, path := range r.GetPaths() {
 				println("ADD ROUTE", domain, path)
-				root.addRoute(path, &handle{})
+				rule.addRoute(path, &handle{})
 			}
+
+			s.defaults[domain] = &handle{}
 		}
 	}
 	return s
@@ -61,7 +77,7 @@ func NewReverseServer() *ReverseServer {
 func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
 	go func() {
-		if err := fasthttp.ListenAndServe(http_addr, me.requestHandler); err != nil {
+		if err := fasthttp.ListenAndServe(http_addr, me.handleHTTPRequest); err != nil {
 			fmt.Println(err)
 		}
 	}()
@@ -70,12 +86,12 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 		me.LogError = errorLogger
 	}
 
+	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
+
 	listener := &defaultListener{}
 	if err := listener.Init(rpc_addr); err != nil {
 		panic(err)
 	}
-
-	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
 	// the main tcp accept loop
 	for {
 		conn, _, err := listener.Accept()
@@ -85,25 +101,28 @@ func (me *ReverseServer) Serve(rpc_addr, http_addr string) {
 			continue
 		}
 		me.Stats.incAcceptCalls()
-		go me.newConnection(conn)
+		go me.handleNewWorker(conn)
 	}
 }
 
-var SLASH = []byte("/")
+// convertRequest transforms an fastHTTP request to a Request oject so we can
+// marshal and send it through the wire.
+// note that, for the sake of simplicity, this transform breaks some HTTP rules:
+//  + all header keys will be lowercased
+//  + when there are multiple headers with a same key, only take the last one
+//  + when there are multiple cookies with a same key, only take the last one
+//  + when there are mutiple query parameters with a same key, only take the
+//      last one
+func convertRequest(ctx *fasthttp.RequestCtx) Request {
+	rawheader := ctx.Request.Header
 
-// convertRequest transforms an HTTP request to proto.Request
-// so we can send it through the wire using TCP protocol
-func convertRequest(ctx *fasthttp.RequestCtx, ps map[string]string) Request {
 	cookies := make(map[string][]byte)
-	ctx.Request.Header.VisitAllCookie(func(key, val []byte) { cookies[string(key)] = val })
-	headers := make(map[string][]byte)
-	ctx.Request.Header.VisitAll(func(k, val []byte) {
-		key := string(bytes.ToLower(k))
-		if key == "content-type" || key == "cookie" || key == "user-agent" {
-			return
-		}
-		headers[key] = val
-	})
+	rawheader.VisitAllCookie(func(key, val []byte) { cookies[string(key)] = val })
+
+	header := make(map[string][]byte)
+	rawheader.VisitAll(func(k, val []byte) { header[string(bytes.ToLower(k))] = val })
+	delete(header, "cookie")
+	delete(header, "user-agent")
 
 	query := make(map[string][]byte)
 	ctx.QueryArgs().VisitAll(func(key, val []byte) { query[string(key)] = val })
@@ -113,61 +132,59 @@ func convertRequest(ctx *fasthttp.RequestCtx, ps map[string]string) Request {
 
 	ip, _, _ := net.SplitHostPort(ctx.RemoteAddr().String())
 	return Request{
-		Version:     "0.1",
-		Body:        ctx.Request.Body(),
-		Method:      string(ctx.Method()),
-		Uri:         ctx.RequestURI(),
-		ContentType: string(ctx.Request.Header.ContentType()),
-		UserAgent:   ctx.Request.Header.UserAgent(),
-		Cookie:      cookies,
-		Header:      headers,
-		RemoteAddr:  ip,
-		Referer:     string(ctx.Referer()),
-		Received:    time.Now().UnixNano() / 1e6,
-		Path:        string(ctx.Path()),
-		Host:        string(ctx.Host()),
-		Query:       query,
-		Form:        form,
-		Param:       ps,
+		Version:    "0.1",
+		Body:       ctx.Request.Body(),
+		Method:     string(ctx.Method()),
+		Uri:        ctx.RequestURI(),
+		UserAgent:  rawheader.UserAgent(),
+		Cookie:     cookies,
+		Header:     header,
+		RemoteAddr: ip,
+		Referer:    string(ctx.Referer()),
+		Received:   time.Now().UnixNano() / 1e6,
+		Path:       string(ctx.Path()),
+		Host:       string(ctx.Host()),
+		Query:      query,
+		Form:       form,
 	}
 }
 
-func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
-	// firstpath := bytes.Split(ctx.Path(), SLASH)[1]
-	// host := ctx.Host()
-	host := string(ctx.Host())
-	path := string(ctx.Path())
+// handleHTTPRequest received a HTTP request, forwarded it to matched workers
+// then sent back response to the client
+func (me *ReverseServer) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
+	domain, path := string(ctx.Host()), string(ctx.Path())
 
-	root := me.roots[host]
-	if root == nil {
+	// find the matched workers for request domain and path
+	rule := me.rules[domain]
+	if rule == nil {
 		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found [%s] %s", host, ctx.Path())
+		fmt.Fprintf(ctx, "not found domain [%s], path %s", domain, path)
+		return
+	}
+	var workers []*Client // workers matched request domain and path
+	if handler, _, _ := rule.getValue(path); handler != nil {
+		workers = handler.workers
+	} else { // no handler found, fallback to default workers
+		workers = me.defaults[domain].workers
+	}
+
+	if len(workers) == 0 {
+		ctx.Response.Header.SetStatusCode(404)
+		fmt.Fprintf(ctx, "not found any client %s", path)
 		return
 	}
 
-	clients := me.def_clients[host]
-	h, ps, _ := root.getValue(path)
-	if h != nil {
-		println("XXXXXXXXX no h", )
-		clients = h.clients
-	}
-
-	if len(clients) == 0 {
-		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s", ctx.Path())
-		return
-	}
+	// pick client in workers using round robin strategy
 	count := int(atomic.AddUint64(&me.requestcount, 1))
 	me.lock.Lock()
-	client := clients[count%len(clients)]
+	worker := workers[count%len(workers)]
 	me.lock.Unlock()
 
 	// TODO: implement retry, circuit breaker
-	res, err := client.Call(convertRequest(ctx, ps))
-
+	res, err := worker.Call(convertRequest(ctx))
 	if err != nil {
 		ctx.Response.Header.SetStatusCode(500)
-		fmt.Fprintf(ctx, "internal err "+err.Error())
+		fmt.Fprintf(ctx, "err: %s", err.Error())
 		return
 	}
 	if res.Error != "" {
@@ -175,14 +192,10 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "internal err "+res.Error)
 		return
 	}
-	if res.ContentType != "" {
-		ctx.Response.Header.SetContentType(res.ContentType)
-	}
 
 	for _, cookie := range res.Cookies {
-		ctx.Response.Header.Cookie(toFastHttpCookie(cookie))
+		ctx.Response.Header.Cookie(toFastHTTPCookie(cookie))
 	}
-
 	ctx.Response.Header.SetStatusCode(int(res.StatusCode))
 	for k, v := range res.Header {
 		ctx.Response.Header.SetBytesV(k, v)
@@ -190,51 +203,61 @@ func (me *ReverseServer) requestHandler(ctx *fasthttp.RequestCtx) {
 	ctx.Response.SetBody(res.Body)
 }
 
-func toFastHttpCookie(cookie *Cookie) *fasthttp.Cookie {
+// toFastHTTPCookie convert proto.Cookie to fastHTTP.Cookie
+func toFastHTTPCookie(cookie *Cookie) *fasthttp.Cookie {
 	cook := &fasthttp.Cookie{}
-	cook.SetHTTPOnly(cookie.GetHttpOnly())
-	cook.SetKey(cookie.GetName())
-	cook.SetValueBytes(cookie.GetValue())
-	cook.SetPath(cookie.GetPath())
-	cook.SetSecure(cookie.GetSecure())
-	cook.SetExpire(time.Unix(cookie.GetExpiredSec(), 0))
+	cook.SetHTTPOnly(cookie.HttpOnly)
+	cook.SetKey(cookie.Name)
+	cook.SetValueBytes(cookie.Value)
+	cook.SetPath(cookie.Path)
+	cook.SetSecure(cookie.Secure)
+	cook.SetExpire(time.Unix(cookie.ExpiredSec, 0))
 	return cook
 }
 
-func (me *ReverseServer) cleanFailedClients() {
+// cleanFailedWorkers removes all disconnected or unresponsed workers
+// in all roots and default workers
+// TODO: this function is slow, it scan through all paths in rule, all workers
+// when we call this function every time a client is disconnected, we may create
+// a bottleneck. I leave it for now but we should must measure it more carefully
+func (me *ReverseServer) cleanFailedWorkers() {
 	me.lock.Lock()
 	for _, r := range me.config.GetRules() {
 		for _, domain := range r.GetDomains() {
-			root := me.roots[domain]
+			// remove failed worker in defaults
+			newworkers := make([]*Client, 0)
+			defhandler := me.defaults[domain]
+			for _, worker := range defhandler.workers {
+				if !worker.IsStopped {
+					newworkers = append(newworkers, worker)
+				}
+			}
+			defhandler.workers = newworkers
+
+			// remove failed workers in rules
+			rule := me.rules[domain]
 			for _, path := range r.GetPaths() {
-				handle, _, _ := root.getValue(path)
-				newclients := make([]*Client, 0)
-				for _, client := range handle.clients {
+				handler, _, _ := rule.getValue(path)
+				newworkers := make([]*Client, 0)
+				for _, client := range handler.workers {
 					if !client.IsStopped {
-						newclients = append(newclients, client)
+						newworkers = append(newworkers, client)
 					}
 				}
-				handle.clients = newclients
+				handler.workers = newworkers
 			}
 		}
-	}
-
-	for k, clients := range me.def_clients {
-		newclients := make([]*Client, 0)
-		for _, client := range clients {
-			if !client.IsStopped {
-				newclients = append(newclients, client)
-			}
-		}
-		me.def_clients[k] = newclients
 	}
 	me.lock.Unlock()
 }
 
-func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
+// handleNewWorker registers a new worker to the server
+// this function is called after after a worker has established a new
+// connection with the server.
+func (me *ReverseServer) handleNewWorker(conn io.ReadWriteCloser) {
 	var dialed bool
-	var client *Client
-	client = &Client{
+	var worker *Client
+	worker = &Client{
 		Dial: func(_ string) (io.ReadWriteCloser, error) {
 			if !dialed {
 				dialed = true
@@ -242,17 +265,17 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 			}
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
-			go client.Stop()
-			client.IsStopped = true
-			me.cleanFailedClients()
+			go worker.Stop()
+			worker.IsStopped = true
+			me.cleanFailedWorkers()
 			return nil, fmt.Errorf("STOPEED")
 		},
 	}
-	client.Start()
+	worker.Start()
 
 	// first message is from the server to the endpoint
 	// endpoint should return paths that its able to handle
-	response, err := client.Call(Request{Uri: []byte("_status")})
+	response, err := worker.Call(Request{Uri: []byte("_status")})
 	if err != nil {
 		// oops, wrong protocol, or there is something wrong, cleaning
 		// me.LogError("gorpc.Server:. Error [%s]", err)
@@ -268,31 +291,32 @@ func (me *ReverseServer) newConnection(conn io.ReadWriteCloser) {
 		return
 	}
 
-
-	me.lock.Lock()
 	for _, domain := range status.GetDomains() {
-		root := me.roots[domain]
-		if root == nil {
+		rule := me.rules[domain]
+		if rule == nil {
 			fmt.Println("ignoring domain", domain)
 			continue
 		}
-
 		for _, path := range status.GetPaths() {
 			if path == "" { // no route
-				me.def_clients[domain] = appendOnce(me.def_clients[domain], client)
+				defhandler := me.defaults[domain]
+				me.lock.Lock()
+				defhandler.workers = appendOnce(defhandler.workers, worker)
+				me.lock.Unlock()
 				continue
 			}
 
-			h, _, _ := root.getValue(path)
-			if h == nil {
-				continue
+			if handler, _, _ := rule.getValue(path); handler != nil {
+				handler.workers = appendOnce(handler.workers, worker)
 			}
-			h.clients = appendOnce(h.clients, client)
 		}
 	}
-	me.lock.Unlock()
 }
 
+// loadConfig reads configuration in /etc/gorpc.json.
+// this function panic if the file is not found or contains malform content
+// configuration format must follows message Config in ./message.proto. See
+// ./gorpc.json for an example.
 func loadConfig() Config {
 	b, err := ioutil.ReadFile("/etc/gorpc.json")
 	if err != nil {
@@ -307,23 +331,25 @@ func loadConfig() Config {
 	return config
 }
 
+// handle holds a reference to slice of worker
 type handle struct {
-	clients []*Client
+	workers []*Client
 }
+
+// Handler is null-able handler
 type Handle *handle
 
-type Params map[string]string
-
-func appendOnce(clients []*Client, client *Client) []*Client {
+// appendOnce adds client to workers if it doesn't existed in workers
+func appendOnce(workers []*Client, client *Client) []*Client {
 	isexisted := false
-	for _, oldclient := range clients {
+	for _, oldclient := range workers {
 		if oldclient == client {
 			isexisted = true
 			break
 		}
 	}
 	if !isexisted {
-		clients = append(clients, client)
+		return append(workers, client)
 	}
-	return clients
+	return workers
 }
