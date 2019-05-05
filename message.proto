@@ -12,7 +12,6 @@ message Config {
 }
 
 message StatusResponse {
-	repeated string unsed_paths = 3;
 	repeated string domains = 4;
 	repeated string paths = 5;
 }
@@ -21,17 +20,16 @@ message Request {
 	string version = 2;
 	uint64 id = 3;
 	bytes uri = 4;
-	string method = 5;
+	string method = 5; // GET, POST, PUT, DELETE, HEAD or OPTION
 	bytes body = 6;
-	// string content_type = 7;
 	bytes user_agent = 8;
 	map<string, bytes> cookie = 9;
 	map<string, bytes> header = 10;
 	string remote_addr = 11;
 	string referer = 12;
 	int64 received = 15;
-	string path = 16;
-	string host = 17;
+	string path = 16; // dont contain query
+	string host = 17; // domain and port
 	map<string, bytes> form = 18;
 	map<string, bytes> query = 19;
 }
@@ -41,9 +39,7 @@ message Response {
 	uint64 id = 3;
 	int32 status_code = 4;
 	bytes body = 5;
-	string error = 9;
 	map<string, bytes> header = 10;
-	// string content_type = 11;
 	repeated Cookie cookies = 12;
 }
 
