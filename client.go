@@ -652,13 +652,6 @@ func clientReader(c *Client, r io.Reader, pendingRequests map[uint64]*AsyncResul
 		atomic.AddUint32(&c.pendingRequestsCount, ^uint32(0))
 		m.Response = response
 
-		if response.Error != "" {
-			m.Error = &ClientError{
-				Server: true,
-				err:    fmt.Errorf("gorpc.Client: [%s]. Server error: [%s]", c.Addr, response.Error),
-			}
-		}
-
 		c.Stats.incRPCCalls()
 		c.Stats.incRPCTime(uint64(time.Since(m.t).Seconds() * 1000))
 

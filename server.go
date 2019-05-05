@@ -291,10 +291,9 @@ func serverHandleConnection(s *Server, conn io.ReadWriteCloser, clientAddr strin
 }
 
 type serverMessage struct {
-	ID         uint64
-	Request    Request
-	Response   Response
-	Error      string
+	ID       uint64
+	Request  Request
+	Response Response
 	ClientAddr string
 }
 
@@ -366,19 +365,29 @@ func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-cha
 
 	if skipResponse {
 		m.Response = Response{}
-		m.Error = ""
 		s.Stats.incRPCCalls()
 		serverMessagePool.Put(m)
 	}
 
 	t := time.Now()
-	response, err := callHandlerWithRecover(s.LogError, s.Handler, clientAddr, s.Addr, request)
+	var response Response
+	func() {
+		defer func() {
+			if x := recover(); x != nil {
+				stackTrace := make([]byte, 1<<20)
+				n := runtime.Stack(stackTrace, false)
+				response.StatusCode = 504
+				response.Body = []byte(fmt.Sprintf("Panic occured: %v\nStack trace: %s", x, stackTrace[:n]))
+				s.LogError("gorpc.Server: [%s]->[%s]. %v", clientAddr, s.Addr, x)
+			}
+		}()
+		response = s.Handler(clientAddr, request)
+	}()
+
 	s.Stats.incRPCTime(uint64(time.Since(t).Seconds() * 1000))
 
 	if !skipResponse {
 		m.Response = response
-		m.Error = err
-
 		// Select hack for better performance.
 		// See https://github.com/valyala/gorpc/pull/1 for details.
 		select {
@@ -392,19 +401,6 @@ func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-cha
 	}
 
 	<-workersCh
-}
-
-func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request Request) (response Response, errStr string) {
-	defer func() {
-		if x := recover(); x != nil {
-			stackTrace := make([]byte, 1<<20)
-			n := runtime.Stack(stackTrace, false)
-			errStr = fmt.Sprintf("Panic occured: %v\nStack trace: %s", x, stackTrace[:n])
-			logErrorFunc("gorpc.Server: [%s]->[%s]. %s", clientAddr, serverAddr, errStr)
-		}
-	}()
-	response = handler(clientAddr, request)
-	return
 }
 
 func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-chan *serverMessage, stopChan <-chan struct{}, done chan<- struct{}) {
@@ -445,10 +441,8 @@ func serverWriter(s *Server, w io.Writer, clientAddr string, responsesChan <-cha
 
 		response := m.Response
 		response.Id = m.ID
-		response.Error = m.Error
 
 		m.Response = Response{}
-		m.Error = ""
 		serverMessagePool.Put(m)
 
 		if err := e.Encode(&response); err != nil {

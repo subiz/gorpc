@@ -187,11 +187,6 @@ func (me *ReverseServer) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "err: %s", err.Error())
 		return
 	}
-	if res.Error != "" {
-		ctx.Response.Header.SetStatusCode(500)
-		fmt.Fprintf(ctx, "internal err "+res.Error)
-		return
-	}
 
 	for _, cookie := range res.Cookies {
 		ctx.Response.Header.Cookie(toFastHTTPCookie(cookie))
