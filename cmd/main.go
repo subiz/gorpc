@@ -12,6 +12,6 @@ func main() {
 	var http_addr = flag.String("http", ":80", "address for the Http server")
 	flag.Parse()
 
-	server := gorpc.NewReverseProxy(nil)
-	server.Serve(*rpc_addr, *http_addr)
+	proxy := gorpc.NewReverseProxy(nil)
+	proxy.Serve(*rpc_addr, *http_addr)
 }

@@ -75,7 +75,7 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 	return s
 }
 
-// Serve starts reverse proxy tcp server and http server
+// Serve starts reverse proxy server and http server and blocks forever
 func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
 	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
 	go func() {

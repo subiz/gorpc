@@ -14,7 +14,6 @@ func StartReverseWorker(proxy_addrs []string, handler HandlerFunc) {
 			worker := &reverseWorker{}
 			for {
 				worker.Serve(addr, handler)
-				worker.Stop()
 				fmt.Println("disconnected from " + addr + " .retry in 2 sec")
 				time.Sleep(2 * time.Second)
 			}
@@ -24,60 +23,48 @@ func StartReverseWorker(proxy_addrs []string, handler HandlerFunc) {
 	} // just sleep forever
 }
 
-type reverseWorker struct {
-	serverStopChan chan struct{}
+type reverseWorker struct{}
+
+// proxyConnection represents a connection from a proxy to a worker
+type proxyConnection struct {
+	clientAddr string
+	conn       io.ReadWriteCloser
 }
 
 // Serve starts rpc server and blocks until it stopped.
 func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
-	if s.serverStopChan != nil {
-		panic("gorpc.Server: --- server is already running. Stop it before starting it again")
-	}
-	s.serverStopChan = make(chan struct{})
 	end := make(chan bool)
-	client := &Client{Addr: proxyaddr, Dial: defaultDial}
+	connC := make(chan proxyConnection, 1)
 
-	connC := make(chan io.ReadWriteCloser, 1)
+	client := &Client{Addr: proxyaddr, Dial: defaultDial}
 	client.OnConnect = func(clientAddr string, conn io.ReadWriteCloser) (io.ReadWriteCloser, error) {
-		connC <- conn
-		server := &Server{
-			Handler:          handler,
-			Listener:         newReverseListener(conn, clientAddr),
-			Concurrency:      DefaultConcurrency,
-			FlushDelay:       DefaultFlushDelay,
-			PendingResponses: DefaultPendingMessages,
-			SendBufferSize:   DefaultBufferSize,
-			RecvBufferSize:   DefaultBufferSize,
-		}
-		if err := server.Start(); err != nil {
-			println("DDDDDDDDD", err.Error())
-		}
+		connC <- proxyConnection{clientAddr: clientAddr, conn: conn}
 		<-end
-		server.Stop()
 		return nil, fmt.Errorf("just exit")
 	}
 	client.Start()
 
+	// wait until connection to the proxy is established
 	conn := <-connC
-	go func() {
-		for {
-			if _, err := conn.Read(make([]byte, 0)); err != nil {
-				close(end)
-				return
-			}
-		}
-	}()
-	select {
-	case <-s.serverStopChan:
-	case <-end:
-	}
-	conn.Close()
-}
+	client.OnConnect = nil // make sure we only call OnConnect once
 
-// Stop stops rpc server. Stopped server can be started again.
-func (s *reverseWorker) Stop() {
-	close(s.serverStopChan)
-	s.serverStopChan = nil
+	go func() {
+		var err error
+		for zero := make([]byte, 0); err == nil; _, err = conn.conn.Read(zero) {
+		}
+
+		close(end)
+	}()
+
+	server := &Server{
+		Handler:     handler,
+		Listener:    newReverseListener(conn.conn, conn.clientAddr),
+		Concurrency: DefaultConcurrency,
+	}
+	if err := server.Start(); err != nil {
+		fmt.Println("Server ERR", err.Error())
+	}
+	<-end
 }
 
 type reverseListener struct {
