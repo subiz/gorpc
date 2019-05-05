@@ -23,7 +23,7 @@ message Request {
 	bytes uri = 4;
 	string method = 5;
 	bytes body = 6;
-	string content_type = 7;
+	// string content_type = 7;
 	bytes user_agent = 8;
 	map<string, bytes> cookie = 9;
 	map<string, bytes> header = 10;
@@ -34,7 +34,6 @@ message Request {
 	string host = 17;
 	map<string, bytes> form = 18;
 	map<string, bytes> query = 19;
-	map<string, string> param = 20;
 }
 
 message Response {
@@ -44,7 +43,7 @@ message Response {
 	bytes body = 5;
 	string error = 9;
 	map<string, bytes> header = 10;
-	string content_type = 11;
+	// string content_type = 11;
 	repeated Cookie cookies = 12;
 }
 
