@@ -50,9 +50,8 @@ func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
 
 	go func() {
 		var err error
-		for zero := make([]byte, 0); err == nil; _, err = conn.conn.Read(zero) {
+		for dump := make([]byte, 0); err == nil; _, err = conn.conn.Read(dump) {
 		}
-
 		close(end)
 	}()
 
@@ -65,6 +64,8 @@ func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
 		fmt.Println("Server ERR", err.Error())
 	}
 	<-end
+	server.Stop()
+	client.Stop()
 }
 
 type reverseListener struct {
