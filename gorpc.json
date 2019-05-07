@@ -7,13 +7,26 @@
 		{
 			"domains": ["app.subiz.net", "app.subiz.com"],
 			"paths": [
-				"/apps/fabikon/*name",
-				"/apps/mailkon/*name",
-				"/apps/subot-reply/*name",
-				"/apps/endchat-bot/*name",
 				"/api/*name",
-				"/v4/*name"
+				"/v4/*name",
+				"/ui/*name",
+				"/push_notification_sw.js",
+				"/mobile-api/*name",
+				"/apps/fabikon/*name",
+				"/apps/endchat-bot/*name",
+				"/apps/mailkon/*name",
+				"/apps/automation-bot/*name",
+				"/apps/subot-reply/*name"
 			]
+		},
+		{
+			"domains": [
+				"ws-0.subiz.net",
+				"ws-1.subiz.net",
+				"ws-0.subiz.com",
+				"ws-1.subiz.com"
+			],
+			"paths": ["/ws/*name"]
 		}
 	]
 }
