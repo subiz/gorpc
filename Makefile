@@ -29,5 +29,4 @@ build:
 
 deploy: build
 	scp server root@dev.subiz.net:/opt/gorpc
-	scp gorpc.json root@dev.subiz.net:/etc/gorpc.json
 	ssh -t -t root@dev.subiz.net  /opt/run.sh

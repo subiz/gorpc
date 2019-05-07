@@ -2,15 +2,6 @@ syntax = "proto3";
 
 package gorpc;
 
-message Host {
-	repeated string domains = 2;
-	repeated string paths = 3;
-}
-
-message Config {
-  repeated Host hosts = 2;
-}
-
 message StatusResponse {
 	repeated string domains = 4;
 	repeated string paths = 5;
