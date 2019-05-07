@@ -107,3 +107,86 @@ func (ln *reverseListener) Close() error {
 	close(lock)
 	return nil
 }
+
+type Handler func(Request, Params, map[string]string, *Response) bool
+
+// Router used by a reverse worker to bind handler to path
+type Router struct {
+	get_root, post_root, del_root *node
+	def                           Handler
+}
+
+func NewRouter() *Router {
+	return &Router{
+		get_root:  &node{},
+		post_root: &node{},
+		del_root:  &node{},
+		def: func(req Request, _ Params, _ map[string]string, res *Response) bool {
+			res.StatusCode = 400
+			res.Body = []byte("dashboard not found :(( " + req.Path + ".")
+			return true
+		},
+	}
+}
+
+func (me *Router) Handle(req Request) Response {
+	res := Response{}
+	res.Header = make(map[string][]byte)
+
+	var root *node
+	switch req.Method {
+	case "GET":
+		root = me.get_root
+	case "POST":
+		root = me.post_root
+	case "DELETE":
+		root = me.del_root
+	default:
+		me.def(req, nil, make(map[string]string), &res)
+		return res
+	}
+
+	h, ps, _ := root.getValue(req.Path)
+	handler, _ := h.(Handler)
+	if handler == nil {
+		me.def(req, nil, make(map[string]string), &res)
+		return res
+	}
+
+	handler(req, ps, make(map[string]string), &res)
+	return res
+}
+
+func (me *Router) NoRoute(handlers ...Handler) {
+	me.def = me.wraps(handlers...)
+}
+
+func (me *Router) GET(path string, handles ...Handler) {
+	me.get_root.addRoute(path, me.wraps(handles...))
+}
+
+func (me *Router) Any(path string, handles ...Handler) {
+	me.POST(path, handles...)
+	me.GET(path, handles...)
+	me.DEL(path, handles...)
+}
+
+func (me *Router) POST(path string, handles ...Handler) {
+	me.post_root.addRoute(path, me.wraps(handles...))
+}
+
+func (me *Router) DEL(path string, handles ...Handler) {
+	me.del_root.addRoute(path, me.wraps(handles...))
+}
+
+func (me *Router) wraps(handles ...Handler) Handler {
+	return func(req Request, ps Params, m map[string]string, res *Response) bool {
+		for _, h := range handles {
+			cont := h(req, ps, m, res)
+			if !cont {
+				return false
+			}
+		}
+		return true
+	}
+}

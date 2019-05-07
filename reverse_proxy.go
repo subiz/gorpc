@@ -164,7 +164,8 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	var workers []*Client // workers matched request domain and path
-	if handler, _, _ := rule.getValue(path); handler != nil {
+	h, _, _ := rule.getValue(path)
+	if handler, _ := h.(Handle); h != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
 		workers = me.defaults[domain].workers
@@ -234,7 +235,8 @@ func (me *ReverseProxy) cleanFailedWorkers() {
 			// remove failed workers in rules
 			rule := me.rules[domain]
 			for _, path := range host.GetPaths() {
-				handler, _, _ := rule.getValue(path)
+				h, _, _ := rule.getValue(path)
+				handler, _ := h.(Handle)
 				newworkers := make([]*Client, 0)
 				for _, client := range handler.workers {
 					if !client.IsStopped {
@@ -303,7 +305,8 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 				continue
 			}
 
-			if handler, _, _ := rule.getValue(path); handler != nil {
+			h, _, _ := rule.getValue(path)
+			if handler, _ := h.(Handle); handler != nil {
 				handler.workers = appendOnce(handler.workers, worker)
 			}
 		}
