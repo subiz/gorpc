@@ -173,7 +173,7 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 
 	if len(workers) == 0 {
 		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s", path)
+		fmt.Fprintf(ctx, "not found any client %s %s", domain, path)
 		return
 	}
 
@@ -192,7 +192,8 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	}
 
 	for _, cookie := range res.Cookies {
-		ctx.Response.Header.Cookie(toFastHTTPCookie(cookie))
+		cook := toFastHTTPCookie(cookie)
+		ctx.Response.Header.SetBytesV("Set-Cookie", cook.Cookie())
 	}
 	ctx.Response.Header.SetStatusCode(int(res.StatusCode))
 	for k, v := range res.Header {
@@ -203,13 +204,14 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 
 // toFastHTTPCookie convert proto.Cookie to fastHTTP.Cookie
 func toFastHTTPCookie(cookie *Cookie) *fasthttp.Cookie {
-	cook := &fasthttp.Cookie{}
+	cook := fasthttp.AcquireCookie()
 	cook.SetHTTPOnly(cookie.HttpOnly)
 	cook.SetKey(cookie.Name)
 	cook.SetValueBytes(cookie.Value)
 	cook.SetPath(cookie.Path)
-	cook.SetSecure(cookie.Secure)
-	cook.SetExpire(time.Unix(cookie.ExpiredSec, 0))
+	cook.SetDomain(cookie.Domain)
+	// cook.SetSecure(cookie.Secure)
+	cook.SetExpire(time.Unix(time.Now().Unix()+cookie.ExpiredSec, 0))
 	return cook
 }
 
@@ -302,11 +304,13 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 				me.lock.Lock()
 				defhandler.workers = appendOnce(defhandler.workers, worker)
 				me.lock.Unlock()
+				println("REGISTERING DEF", domain)
 				continue
 			}
 
 			h, _, _ := rule.getValue(path)
 			if handler, _ := h.(*Handle); handler != nil {
+				println("REGISTERING", domain, path)
 				handler.workers = appendOnce(handler.workers, worker)
 			}
 		}
