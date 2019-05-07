@@ -1,33 +1,64 @@
 package gorpc
 
 import (
+	"bytes"
+	"io/ioutil"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestReverseProxy(t *testing.T) {
-	proxy := NewReverseProxy(&Config{
+	// start the proxy
+	go NewReverseProxy(&Config{
 		Hosts: []*Host{{
 			Domains: []string{"api.com"},
-			Paths: []string{"/4.0/*name"},
+			Paths:   []string{"/4.0/*name"},
 		}},
-	})
-	proxy.Serve(":1992", ":1995")
+	}).Serve(":11992", ":11995")
 
-	client := ReverseClient{ServerAddrs: []string{"127.0.0.1:1992"}}
-	count := uint64(0)
-	client.Start(func(clientAddr string, request Request) Response {
-		if string(request.Uri) == "_status" {
-			b, _ := json.Marshal(&StatusResponse{Paths: []string{"localhost:1995/hello"}})
-			println("GOT STATUS", string(b))
+	// run the client
+	router := NewRouter([]string{"127.0.0.1:11992"}, []string{"api.com"})
+	router.GET("/4.0/ping", func(c *Context) { c.String("pong") })
+	go router.Run()
 
-			return Response{StatusCode: 200, Body: b}
+	time.Sleep(100 * time.Millisecond)
+	code, body := doHTTP("GET", "http://127.0.0.1:11995", H{"host": "api.com"}, nil)
+	if code != 404 {
+		t.Fatalf("should be 404, got %d, %s", code, body)
+	}
+
+	code, body = doHTTP("GET", "http://127.0.0.1:11995/4.0/ping", H{"Host": "api.com"}, nil)
+	if code != 200 && body != "pong" {
+		t.Fatalf("should be ping, got [%d] %s", code, body)
+	}
+}
+
+var g_HTTP = &http.Client{Timeout: 60 * time.Second}
+
+type H map[string]string
+
+func doHTTP(method, url string, header H, body []byte) (int, string) {
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
+	if err != nil {
+		panic(err)
+	}
+
+	for k, v := range header {
+		if strings.ToLower(k) == "host" {
+			req.Host = v
 		}
+		req.Header.Add(k, v)
+	}
+	res, err := g_HTTP.Do(req)
+	if err != nil {
+		return -1, err.Error()
+	}
 
-		c := atomic.AddUint64(&count, 1)
-		fmt.Println(string(request.Method), string(request.Uri), "count", c)
-		return Response{StatusCode: 200, Body: []byte("khoe khong--" + time.Now().String())}
-	})
-
+	b, _ := ioutil.ReadAll(res.Body)
+	res.Body.Close()
+	return res.StatusCode, string(b)
 }
 
 func TestRPClientCrash(t *testing.T) {
