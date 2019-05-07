@@ -162,13 +162,13 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	}
 	var workers []*Client // workers matched request domain and path
 	h, _, _ := rule.getValue(path)
+	me.lock.Lock()
 	if handler, _ := h.(*Handle); handler != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
 		workers = me.defaults[domain].workers
 	}
 
-	me.lock.Lock()
 	if len(workers) == 0 {
 		me.lock.Unlock()
 		ctx.Response.Header.SetStatusCode(503)
@@ -176,6 +176,7 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// me.Log("CALLING %d", len(workers))
 	// pick client in workers using round robin strategy
 	count := int(atomic.AddUint64(&me.requestcount, 1))
 	worker := workers[count%len(workers)]
@@ -265,9 +266,10 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 			}
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
-			worker.Stop()
 			worker.IsStopped = true
 			me.cleanFailedWorkers()
+			go worker.Stop()
+			time.Sleep(2 * time.Second)
 			return nil, fmt.Errorf("STOPEED")
 		},
 	}
