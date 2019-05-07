@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-type Handler func(Request, Params, map[string]string, *Response) bool
+type Handler func(context *Context)
 
 // Router used by a reverse worker to bind handler to path
 type Router struct {
@@ -16,18 +16,16 @@ type Router struct {
 	proxy_addrs, domains, paths   []string
 }
 
-func NewRouter(proxy_addrs, domains, paths []string) *Router {
+func NewRouter(proxy_addrs, domains []string) *Router {
 	return &Router{
 		proxy_addrs: proxy_addrs,
 		domains:     domains,
-		paths:       paths,
 		get_root:    &node{},
 		post_root:   &node{},
 		del_root:    &node{},
-		def: func(req Request, _ Params, _ map[string]string, res *Response) bool {
-			res.StatusCode = 400
-			res.Body = []byte("dashboard not found :(( " + req.Path + ".")
-			return true
+		def: func(c *Context) {
+			c.SetCode(400)
+			c.String("dashboard not found :(( " + c.Request.Path + ".")
 		},
 	}
 }
@@ -60,9 +58,6 @@ func (me *Router) Run() {
 }
 
 func (me *Router) Handle(req Request) Response {
-	res := Response{}
-	res.Header = make(map[string][]byte)
-
 	var root *node
 	switch req.Method {
 	case "GET":
@@ -71,53 +66,60 @@ func (me *Router) Handle(req Request) Response {
 		root = me.post_root
 	case "DELETE":
 		root = me.del_root
-	default:
-		me.def(req, nil, make(map[string]string), &res)
-		return res
 	}
 
+	res := Response{}
+	res.Header = make(map[string][]byte)
+	if root == nil {
+		me.def(&Context{Request: req, Response: &res})
+		return res
+	}
 	h, ps, _ := root.getValue(req.Path)
 	handler, _ := h.(Handler)
 	if handler == nil {
-		me.def(req, nil, make(map[string]string), &res)
+		me.def(&Context{Request: req, Response: &res})
 		return res
 	}
 
-	handler(req, ps, make(map[string]string), &res)
+	handler(&Context{Request: req, Params: ps, Store: make(map[string]string), Response: &res})
 	return res
 }
 
 func (me *Router) NoRoute(handlers ...Handler) {
 	me.def = me.wraps(handlers...)
+	me.paths = append(me.paths, "")
 }
 
 func (me *Router) GET(path string, handles ...Handler) {
 	me.get_root.addRoute(path, me.wraps(handles...))
+	me.paths = append(me.paths, path)
 }
 
 func (me *Router) Any(path string, handles ...Handler) {
-	me.POST(path, handles...)
-	me.GET(path, handles...)
-	me.DEL(path, handles...)
+	me.get_root.addRoute(path, me.wraps(handles...))
+	me.post_root.addRoute(path, me.wraps(handles...))
+	me.del_root.addRoute(path, me.wraps(handles...))
+	me.paths = append(me.paths, path)
 }
 
 func (me *Router) POST(path string, handles ...Handler) {
 	me.post_root.addRoute(path, me.wraps(handles...))
+	me.paths = append(me.paths, path)
 }
 
 func (me *Router) DEL(path string, handles ...Handler) {
 	me.del_root.addRoute(path, me.wraps(handles...))
+	me.paths = append(me.paths, path)
 }
 
 func (me *Router) wraps(handles ...Handler) Handler {
-	return func(req Request, ps Params, m map[string]string, res *Response) bool {
+	return func(c *Context) {
 		for _, h := range handles {
-			cont := h(req, ps, m, res)
-			if !cont {
-				return false
+			h(c)
+			if c.Aborted {
+				break
 			}
 		}
-		return true
 	}
 }
 
@@ -132,25 +134,47 @@ type Unmarshaller interface {
 	UnmarshalJSON(data []byte) error
 }
 
-func JSON(res *Response, v interface{}) {
-	res.StatusCode = 200
-	res.Header["content-type"] = APPJSON
+type Context struct {
+	Request  Request
+	Params   Params
+	Store    map[string]string
+	Response *Response
+	Aborted  bool
+}
+
+func (c *Context) JSON(v interface{}) {
+	if c.Response.StatusCode == 0 {
+		c.Response.StatusCode = 200
+	}
+	c.Response.Header["content-type"] = APPJSON
 
 	if mars, ok := v.(Marshaller); ok {
-		res.Body, _ = mars.MarshalJSON()
+		c.Response.Body, _ = mars.MarshalJSON()
 	} else {
-		res.Body, _ = json.Marshal(v)
+		c.Response.Body, _ = json.Marshal(v)
 	}
 }
 
-func Data(res *Response, contenttype string, data []byte) {
-	res.StatusCode = 200
-	res.Header["content-type"] = []byte(contenttype)
-	res.Body = data
+func (c *Context) Data(contenttype string, data []byte) {
+	if c.Response.StatusCode == 0 {
+		c.Response.StatusCode = 200
+	}
+	c.Response.Header["content-type"] = []byte(contenttype)
+	c.Response.Body = data
 }
 
-func String(res *Response, str string) {
-	res.StatusCode = 200
-	res.Header["content-type"] = TEXTPLAIN
-	res.Body = []byte(str)
+func (c *Context) String(str string) {
+	if c.Response.StatusCode == 0 {
+		c.Response.StatusCode = 200
+	}
+	c.Response.Header["content-type"] = TEXTPLAIN
+	c.Response.Body = []byte(str)
+}
+
+func (c *Context) Abort() {
+	c.Aborted = true
+}
+
+func (c *Context) SetCode(statuscode int) {
+	c.Response.StatusCode = int32(statuscode)
 }
