@@ -1,27 +1,13 @@
 package gorpc
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"time"
 )
-
-// Start makes connection to and starts waiting request from the proxy
-func StartReverseWorker(proxy_addrs []string, handler HandlerFunc) {
-	for _, addr := range proxy_addrs {
-		go func(addr string) {
-			worker := &reverseWorker{}
-			for {
-				worker.Serve(addr, handler)
-				fmt.Println("disconnected from " + addr + " .retry in 2 sec")
-				time.Sleep(2 * time.Second)
-			}
-		}(addr)
-	}
-	for ; ; time.Sleep(10 * time.Minute) {
-	} // just sleep forever
-}
 
 type reverseWorker struct{}
 
@@ -114,19 +100,50 @@ type Handler func(Request, Params, map[string]string, *Response) bool
 type Router struct {
 	get_root, post_root, del_root *node
 	def                           Handler
+	proxy_addrs, domains, paths   []string
 }
 
-func NewRouter() *Router {
+func NewRouter(proxy_addrs, domains, paths []string) *Router {
 	return &Router{
-		get_root:  &node{},
-		post_root: &node{},
-		del_root:  &node{},
+		proxy_addrs: proxy_addrs,
+		domains:     domains,
+		paths:       paths,
+		get_root:    &node{},
+		post_root:   &node{},
+		del_root:    &node{},
 		def: func(req Request, _ Params, _ map[string]string, res *Response) bool {
 			res.StatusCode = 400
 			res.Body = []byte("dashboard not found :(( " + req.Path + ".")
 			return true
 		},
 	}
+}
+
+var STATUS = []byte("_status")
+
+// Start makes connection to and starts waiting request from the proxy
+func (me *Router) Run() {
+	for _, addr := range me.proxy_addrs {
+		go func(addr string) {
+			worker := &reverseWorker{}
+			for {
+				worker.Serve(addr, func(clientAddr string, request Request) Response {
+					if bytes.Compare(request.Uri, STATUS) == 0 {
+						b, _ := json.Marshal(&StatusResponse{
+							Paths:   me.paths,
+							Domains: me.domains,
+						})
+						return Response{StatusCode: 200, Body: b}
+					}
+					return me.Handle(request)
+				})
+				fmt.Println("disconnected from " + addr + " .retry in 2 sec")
+				time.Sleep(2 * time.Second)
+			}
+		}(addr)
+	}
+	for ; ; time.Sleep(10 * time.Minute) {
+	} // just sleep forever
 }
 
 func (me *Router) Handle(req Request) Response {

@@ -38,7 +38,7 @@ type ReverseProxy struct {
 	rules map[string]*node
 	// map domain with its default workers, those workers will handle requests
 	// which doesn't match any rules defined in roots for a givien domain
-	defaults map[string]Handle
+	defaults map[string]*Handle
 
 	// holds all routing rules
 	config *Config
@@ -55,7 +55,7 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 	s := &ReverseProxy{
 		lock:     &sync.Mutex{},
 		rules:    make(map[string]*node),
-		defaults: make(map[string]Handle),
+		defaults: make(map[string]*Handle),
 		config:   config,
 	}
 
@@ -66,10 +66,10 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 			s.rules[domain] = rule
 			for _, path := range host.GetPaths() {
 				println("ADD ROUTE", domain, path)
-				rule.addRoute(path, &handle{})
+				rule.addRoute(path, &Handle{})
 			}
 
-			s.defaults[domain] = &handle{}
+			s.defaults[domain] = &Handle{}
 		}
 	}
 	return s
@@ -165,7 +165,7 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	}
 	var workers []*Client // workers matched request domain and path
 	h, _, _ := rule.getValue(path)
-	if handler, _ := h.(Handle); h != nil {
+	if handler, _ := h.(*Handle); handler != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
 		workers = me.defaults[domain].workers
@@ -236,7 +236,7 @@ func (me *ReverseProxy) cleanFailedWorkers() {
 			rule := me.rules[domain]
 			for _, path := range host.GetPaths() {
 				h, _, _ := rule.getValue(path)
-				handler, _ := h.(Handle)
+				handler, _ := h.(*Handle)
 				newworkers := make([]*Client, 0)
 				for _, client := range handler.workers {
 					if !client.IsStopped {
@@ -306,7 +306,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 			}
 
 			h, _, _ := rule.getValue(path)
-			if handler, _ := h.(Handle); handler != nil {
+			if handler, _ := h.(*Handle); handler != nil {
 				handler.workers = appendOnce(handler.workers, worker)
 			}
 		}
@@ -332,12 +332,9 @@ func loadConfig() *Config {
 }
 
 // handle holds a reference to slice of worker
-type handle struct {
+type Handle struct {
 	workers []*Client
 }
-
-// Handler is null-able handler
-type Handle *handle
 
 // appendOnce adds client to workers if it doesn't existed in workers
 func appendOnce(workers []*Client, client *Client) []*Client {
