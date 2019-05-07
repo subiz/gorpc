@@ -6,7 +6,16 @@ import (
 	"net"
 )
 
-type reverseWorker struct{}
+type reverseWorker struct {
+	stop      chan bool
+	handler   HandlerFunc
+	proxyaddr string
+}
+
+func (s *reverseWorker) Stop() {
+	close(s.stop)
+	s.stop = nil
+}
 
 // proxyConnection represents a connection from a proxy to a worker
 type proxyConnection struct {
@@ -14,12 +23,18 @@ type proxyConnection struct {
 	conn       io.ReadWriteCloser
 }
 
-// Serve starts rpc server and blocks until it stopped.
-func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
-	end := make(chan bool)
-	connC := make(chan proxyConnection, 1)
+func newReverseWorker(proxyaddr string, handler HandlerFunc) *reverseWorker {
+	return &reverseWorker{proxyaddr: proxyaddr, handler: handler, stop: make(chan bool)}
+}
 
-	client := &Client{Addr: proxyaddr, Dial: defaultDial}
+// Serve starts rpc server and blocks until it stopped.
+func (s *reverseWorker) Run() {
+	if s.stop == nil {
+		return
+	}
+	connC := make(chan proxyConnection, 1)
+	end := make(chan bool)
+	client := &Client{Addr: s.proxyaddr, Dial: defaultDial}
 	client.OnConnect = func(clientAddr string, conn io.ReadWriteCloser) (io.ReadWriteCloser, error) {
 		connC <- proxyConnection{clientAddr: clientAddr, conn: conn}
 		<-end
@@ -28,8 +43,25 @@ func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
 	client.Start()
 
 	// wait until connection to the proxy is established
-	conn := <-connC
+	var conn proxyConnection
+	select {
+	case conn = <-connC:
+	case <-s.stop:
+		client.OnConnect = nil // make sure we only call OnConnect once
+		close(end)
+		client.Stop()
+		return
+	}
 	client.OnConnect = nil // make sure we only call OnConnect once
+
+	server := &Server{
+		Handler:     s.handler,
+		Listener:    newReverseListener(conn.conn, conn.clientAddr),
+		Concurrency: DefaultConcurrency,
+	}
+	if err := server.Start(); err != nil {
+		fmt.Println("Server ERR", err.Error())
+	}
 
 	go func() {
 		var err error
@@ -38,15 +70,11 @@ func (s *reverseWorker) Serve(proxyaddr string, handler HandlerFunc) {
 		close(end)
 	}()
 
-	server := &Server{
-		Handler:     handler,
-		Listener:    newReverseListener(conn.conn, conn.clientAddr),
-		Concurrency: DefaultConcurrency,
+	select {
+	case <-end:
+	case <-s.stop:
 	}
-	if err := server.Start(); err != nil {
-		fmt.Println("Server ERR", err.Error())
-	}
-	<-end
+	conn.conn.Close()
 	server.Stop()
 	client.Stop()
 }

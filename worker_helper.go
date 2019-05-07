@@ -14,6 +14,7 @@ type Router struct {
 	get_root, post_root, del_root *node
 	def                           Handler
 	proxy_addrs, domains, paths   []string
+	stop                          chan bool
 }
 
 func NewRouter(proxy_addrs, domains []string) *Router {
@@ -27,34 +28,48 @@ func NewRouter(proxy_addrs, domains []string) *Router {
 			c.SetCode(400)
 			c.String("dashboard not found :(( " + c.Request.Path + ".")
 		},
+		stop: make(chan bool),
 	}
 }
 
 var STATUS = []byte("_status")
 
+func (me *Router) Stop() {
+	close(me.stop)
+}
+
 // Start makes connection to and starts waiting request from the proxy
 func (me *Router) Run() {
+	is_stopped := false
+	workers := make([]*reverseWorker, 0)
 	for _, addr := range me.proxy_addrs {
-		go func(addr string) {
-			worker := &reverseWorker{}
-			for {
-				worker.Serve(addr, func(clientAddr string, request Request) Response {
-					if bytes.Compare(request.Uri, STATUS) == 0 {
-						b, _ := json.Marshal(&StatusResponse{
-							Paths:   me.paths,
-							Domains: me.domains,
-						})
-						return Response{StatusCode: 200, Body: b}
-					}
-					return me.Handle(request)
+		worker := newReverseWorker(addr, func(clientAddr string, request Request) Response {
+			if bytes.Compare(request.Uri, STATUS) == 0 {
+				b, _ := json.Marshal(&StatusResponse{
+					Paths:   me.paths,
+					Domains: me.domains,
 				})
+				return Response{StatusCode: 200, Body: b}
+			}
+			return me.Handle(request)
+		})
+
+		workers = append(workers, worker)
+		go func(addr string) {
+			for !is_stopped {
+				worker.Run()
 				fmt.Println("disconnected from " + addr + " .retry in 2 sec")
 				time.Sleep(2 * time.Second)
 			}
 		}(addr)
 	}
-	for ; ; time.Sleep(10 * time.Minute) {
-	} // just sleep forever
+	select {
+	case <-me.stop:
+	}
+	for _, worker := range workers {
+		worker.Stop()
+	}
+	is_stopped = true
 }
 
 func (me *Router) Handle(req Request) Response {
