@@ -223,12 +223,21 @@ func (c *Client) CallTimeout(request Request, timeout time.Duration) (Response, 
 	t := acquireTimer(timeout)
 
 	select {
+	case <-c.clientStopChan:
+		m.Cancel()
+		err = &ClientError{
+			Timeout: true,
+			err:     fmt.Errorf("gorpc.Client: [%s]. Connection is closed", c.Addr),
+		}
 	case <-m.Done:
 		response, err = m.Response, m.Error
 		releaseAsyncResult(m)
 	case <-t.C:
 		m.Cancel()
-		err = getClientTimeoutError(c, timeout)
+		err = &ClientError{
+			Timeout: true,
+			err:     fmt.Errorf("gorpc.Client: [%s]. Cannot obtain response during timeout=%s", c.Addr, timeout),
+		}
 	}
 
 	releaseTimer(t)
@@ -254,12 +263,6 @@ func releaseAsyncResult(m *AsyncResult) {
 }
 
 var asyncResultPool sync.Pool
-
-func getClientTimeoutError(c *Client, timeout time.Duration) error {
-	err := fmt.Errorf("gorpc.Client: [%s]. Cannot obtain response during timeout=%s", c.Addr, timeout)
-	c.LogError("%s", err)
-	return &ClientError{Timeout: true, err: err}
-}
 
 // AsyncResult is a result returned from Client.CallAsync().
 type AsyncResult struct {
@@ -513,11 +516,7 @@ func clientHandleConnection(c *Client, conn io.ReadWriteCloser) {
 	}
 
 	if err != nil {
-		c.LogError("%s", err)
-		err = &ClientError{
-			Connection: true,
-			err:        err,
-		}
+		err = &ClientError{Connection: true, err: err}
 	}
 	for _, m := range pendingRequests {
 		atomic.AddUint32(&c.pendingRequestsCount, ^uint32(0))
