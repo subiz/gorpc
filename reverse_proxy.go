@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -40,40 +39,23 @@ type ReverseProxy struct {
 	// which doesn't match any rules defined in roots for a givien domain
 	defaults map[string]*Handle
 
-	// holds all routing rules
-	config *Config
+	// tells registerd paths and domains of a client
+	client_domains map[string][]string
+	client_paths   map[string][]string
 }
 
 // NewReverseProxy setups a new ReverseProxy server
 // The configuration in /etc/gorpc.json will be loaded
 // After this, user can start the server by calling Serve().
-func NewReverseProxy(config *Config) *ReverseProxy {
-	if config == nil {
-		config = loadConfig()
+func NewReverseProxy() *ReverseProxy {
+	return &ReverseProxy{
+		lock:           &sync.Mutex{},
+		rules:          make(map[string]*node),
+		defaults:       make(map[string]*Handle),
+		client_domains: make(map[string][]string),
+		client_paths:   make(map[string][]string),
+		Log:            muteLogger,
 	}
-
-	s := &ReverseProxy{
-		lock:     &sync.Mutex{},
-		rules:    make(map[string]*node),
-		defaults: make(map[string]*Handle),
-		config:   config,
-		Log:      muteLogger,
-	}
-
-	// register
-	for _, host := range config.GetHosts() {
-		for _, domain := range host.GetDomains() {
-			rule := &node{}
-			s.rules[domain] = rule
-			for _, path := range host.GetPaths() {
-				s.Log("ADD ROUTE", domain, path)
-				rule.addRoute(path, &Handle{})
-			}
-
-			s.defaults[domain] = &Handle{}
-		}
-	}
-	return s
 }
 
 // Serve starts reverse proxy server and http server and blocks forever
@@ -153,16 +135,17 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	domain, path := string(ctx.Host()), string(ctx.Path())
 
+	me.lock.Lock()
 	// find the matched workers for request domain and path
 	rule := me.rules[domain]
 	if rule == nil {
-		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found domain [%s], path %s", domain, path)
+		me.lock.Unlock()
+		ctx.Response.Header.SetStatusCode(503)
+		fmt.Fprintf(ctx, "no avaiable workers for domain %s%s", domain, path)
 		return
 	}
 	var workers []*Client // workers matched request domain and path
 	h, _, _ := rule.getValue(path)
-	me.lock.Lock()
 	if handler, _ := h.(*Handle); handler != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
@@ -219,35 +202,35 @@ func toFastHTTPCookie(cookie *Cookie) *fasthttp.Cookie {
 // TODO: this function is slow, it scan through all paths in rule, all workers
 // when we call this function every time a client is disconnected, we may create
 // a bottleneck. I leave it for now but we should must measure it more carefully
-func (me *ReverseProxy) cleanFailedWorkers() {
+func (me *ReverseProxy) cleanFailedWorkers(addr string) {
 	me.lock.Lock()
-	for _, host := range me.config.GetHosts() {
-		for _, domain := range host.GetDomains() {
-			// remove failed worker in defaults
-			newworkers := make([]*Client, 0)
-			defhandler := me.defaults[domain]
-			for _, worker := range defhandler.workers {
-				if !worker.IsStopped {
-					newworkers = append(newworkers, worker)
-				}
-			}
-			defhandler.workers = newworkers
-
-			// remove failed workers in rules
-			rule := me.rules[domain]
-			for _, path := range host.GetPaths() {
-				h, _, _ := rule.getValue(path)
-				handler, _ := h.(*Handle)
-				newworkers := make([]*Client, 0)
-				for _, client := range handler.workers {
-					if !client.IsStopped {
-						newworkers = append(newworkers, client)
-					}
-				}
-				handler.workers = newworkers
+	for _, domain := range me.client_domains[addr] {
+		// remove failed worker in defaults
+		newworkers := make([]*Client, 0)
+		defhandler := me.defaults[domain]
+		for _, worker := range defhandler.workers {
+			if !worker.IsStopped {
+				newworkers = append(newworkers, worker)
 			}
 		}
+		defhandler.workers = newworkers
+
+		// remove failed workers in rules
+		rule := me.rules[domain]
+		for _, path := range me.client_paths[addr] {
+			h, _, _ := rule.getValue(path)
+			handler, _ := h.(*Handle)
+			newworkers := make([]*Client, 0)
+			for _, client := range handler.workers {
+				if !client.IsStopped {
+					newworkers = append(newworkers, client)
+				}
+			}
+			handler.workers = newworkers
+		}
 	}
+	delete(me.client_domains, addr)
+	delete(me.client_paths, addr)
 	me.lock.Unlock()
 }
 
@@ -267,7 +250,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
 			worker.IsStopped = true
-			me.cleanFailedWorkers()
+			me.cleanFailedWorkers(addr)
 			go worker.Stop()
 			time.Sleep(2 * time.Second)
 			return nil, fmt.Errorf("STOPEED")
@@ -294,47 +277,39 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 		return
 	}
 
+	me.lock.Lock()
+	me.client_domains[addr] = status.GetDomains()
+	me.client_paths[addr] = status.GetPaths()
+	me.lock.Unlock()
 	for _, domain := range status.GetDomains() {
 		rule := me.rules[domain]
 		if rule == nil {
-			me.Log("ignoring domain %s", domain)
-			continue
+			rule := &node{}
+			me.rules[domain] = rule
 		}
+
 		for _, path := range status.GetPaths() {
 			if path == "" { // no route
 				defhandler := me.defaults[domain]
-				me.lock.Lock()
+				if defhandler == nil {
+					defhandler := &Handle{}
+					me.defaults[domain] = defhandler
+				}
 				defhandler.workers = appendOnce(defhandler.workers, worker)
-				me.lock.Unlock()
 				me.Log("REGISTERING DEF %s", domain)
 				continue
 			}
 
 			h, _, _ := rule.getValue(path)
-			if handler, _ := h.(*Handle); handler != nil {
+			handler, _ := h.(*Handle)
+			if handler == nil {
+				handler := &Handle{}
+				rule.addRoute(path, handler)
 				me.Log("REGISTERING %s %s", domain, path)
-				handler.workers = appendOnce(handler.workers, worker)
 			}
+			handler.workers = appendOnce(handler.workers, worker)
 		}
 	}
-}
-
-// loadConfig reads configuration in /etc/gorpc.json.
-// this function panic if the file is not found or contains malform content
-// configuration format must follows message Config in ./message.proto. See
-// ./gorpc.json for an example.
-func loadConfig() *Config {
-	b, err := ioutil.ReadFile("/etc/gorpc.json")
-	if err != nil {
-		errorLogger("/etc/gorpc.json not found")
-		panic(err)
-	}
-	config := &Config{}
-	if err := json.Unmarshal(b, config); err != nil {
-		errorLogger("invalid config")
-		panic(err)
-	}
-	return config
 }
 
 // handle holds a reference to slice of worker
