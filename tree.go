@@ -49,6 +49,17 @@ type node struct {
 	priority  uint32
 }
 
+func (n *node) traversal(f func(path string, handler interface{})) {
+	if n == nil {
+		return
+	}
+
+	f(n.path, n.handle)
+	for _, child := range n.children {
+		child.traversal(f)
+	}
+}
+
 // increments priority of the given child and reorders if necessary
 func (n *node) incrementChildPrio(pos int) int {
 	n.children[pos].priority++
