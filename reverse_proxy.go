@@ -19,29 +19,16 @@ type ReverseProxy struct {
 	// By default the function set via SetErrorLogger() is used.
 	Log LoggerFunc
 
-	// Connection statistics.
-	// The stats doesn't reset automatically. Feel free resetting it
-	// any time you wish.
-	Stats ConnStats
-
 	// keeps track of total request proxied
 	requestcount uint64
 
-	// protects array of workers inside 'rules' and 'defaults'
-	// we intentionally only read 'rules' and 'defaults' after initialized them,
-	// since maps allow concurrent read with no write, so we don't have to lock
-	// when use them, but the value inside them changed often when workers are
-	// connected or disconnected, therfore it need to be protected.
+	// protects rules and defaults
 	lock *sync.Mutex
 	// map domain to its routing rules, rules is represent as root of a tree
 	rules map[string]*node
 	// map domain with its default workers, those workers will handle requests
 	// which doesn't match any rules defined in roots for a givien domain
 	defaults map[string]*Handle
-
-	// tells registerd paths and domains of a client
-	client_domains map[string][]string
-	client_paths   map[string][]string
 }
 
 // NewReverseProxy setups a new ReverseProxy server
@@ -49,12 +36,10 @@ type ReverseProxy struct {
 // After this, user can start the server by calling Serve().
 func NewReverseProxy() *ReverseProxy {
 	return &ReverseProxy{
-		lock:           &sync.Mutex{},
-		rules:          make(map[string]*node),
-		defaults:       make(map[string]*Handle),
-		client_domains: make(map[string][]string),
-		client_paths:   make(map[string][]string),
-		Log:            muteLogger,
+		lock:     &sync.Mutex{},
+		rules:    make(map[string]*node),
+		defaults: make(map[string]*Handle),
+		Log:      muteLogger,
 	}
 }
 
@@ -77,11 +62,9 @@ func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
 	for {
 		conn, addr, err := listener.Accept()
 		if err != nil {
-			me.Stats.incAcceptErrors()
 			me.Log("Cannot accept new connection: [%s]", err)
 			continue
 		}
-		me.Stats.incAcceptCalls()
 		go me.handleNewWorker(conn, addr)
 	}
 }
@@ -149,7 +132,9 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	if handler, _ := h.(*Handle); handler != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
-		workers = me.defaults[domain].workers
+		if defhandler := me.defaults[domain]; defhandler != nil {
+			workers = defhandler.workers
+		}
 	}
 
 	if len(workers) == 0 {
@@ -202,24 +187,27 @@ func toFastHTTPCookie(cookie *Cookie) *fasthttp.Cookie {
 // TODO: this function is slow, it scan through all paths in rule, all workers
 // when we call this function every time a client is disconnected, we may create
 // a bottleneck. I leave it for now but we should must measure it more carefully
-func (me *ReverseProxy) cleanFailedWorkers(addr string) {
+func (me *ReverseProxy) cleanFailedWorkers() {
 	me.lock.Lock()
-	for _, domain := range me.client_domains[addr] {
-		// remove failed worker in defaults
-		newworkers := make([]*Client, 0)
-		defhandler := me.defaults[domain]
-		for _, worker := range defhandler.workers {
-			if !worker.IsStopped {
-				newworkers = append(newworkers, worker)
-			}
-		}
-		defhandler.workers = newworkers
-
+	for _, node := range me.rules {
 		// remove failed workers in rules
-		rule := me.rules[domain]
-		for _, path := range me.client_paths[addr] {
-			h, _, _ := rule.getValue(path)
+		node.traversal(func(_ string, h interface{}) {
 			handler, _ := h.(*Handle)
+			if handler == nil {
+				return
+			}
+			// quick check if there is failed workers
+			hasFailedWorkers := false
+			for _, client := range handler.workers {
+				if client.IsStopped {
+					hasFailedWorkers = true
+					break
+				}
+			}
+			if !hasFailedWorkers {
+				return
+			}
+
 			newworkers := make([]*Client, 0)
 			for _, client := range handler.workers {
 				if !client.IsStopped {
@@ -227,10 +215,31 @@ func (me *ReverseProxy) cleanFailedWorkers(addr string) {
 				}
 			}
 			handler.workers = newworkers
-		}
+		})
 	}
-	delete(me.client_domains, addr)
-	delete(me.client_paths, addr)
+
+	for _, handler := range me.defaults {
+		// quick check if there is failed workers
+		hasFailedWorkers := false
+		for _, client := range handler.workers {
+			if client.IsStopped {
+				hasFailedWorkers = true
+				break
+			}
+		}
+		if !hasFailedWorkers {
+			continue
+		}
+
+		// remove failed worker in defaults
+		newworkers := make([]*Client, 0)
+		for _, worker := range handler.workers {
+			if !worker.IsStopped {
+				newworkers = append(newworkers, worker)
+			}
+		}
+		handler.workers = newworkers
+	}
 	me.lock.Unlock()
 }
 
@@ -250,7 +259,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
 			worker.IsStopped = true
-			me.cleanFailedWorkers(addr)
+			me.cleanFailedWorkers()
 			go worker.Stop()
 			time.Sleep(2 * time.Second)
 			return nil, fmt.Errorf("STOPEED")
@@ -278,13 +287,10 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 	}
 
 	me.lock.Lock()
-	me.client_domains[addr] = status.GetDomains()
-	me.client_paths[addr] = status.GetPaths()
-	me.lock.Unlock()
 	for _, domain := range status.GetDomains() {
 		rule := me.rules[domain]
 		if rule == nil {
-			rule := &node{}
+			rule = &node{}
 			me.rules[domain] = rule
 		}
 
@@ -292,7 +298,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 			if path == "" { // no route
 				defhandler := me.defaults[domain]
 				if defhandler == nil {
-					defhandler := &Handle{}
+					defhandler = &Handle{}
 					me.defaults[domain] = defhandler
 				}
 				defhandler.workers = appendOnce(defhandler.workers, worker)
@@ -303,13 +309,14 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 			h, _, _ := rule.getValue(path)
 			handler, _ := h.(*Handle)
 			if handler == nil {
-				handler := &Handle{}
+				handler = &Handle{}
 				rule.addRoute(path, handler)
 				me.Log("REGISTERING %s %s", domain, path)
 			}
 			handler.workers = appendOnce(handler.workers, worker)
 		}
 	}
+	me.lock.Unlock()
 }
 
 // handle holds a reference to slice of worker
