@@ -78,14 +78,14 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 
 // Serve starts reverse proxy server and http server and blocks forever
 func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
-	me.Log("HTTP SERVER IS LISTENING AT", http_addr)
+	me.Log("HTTP SERVER IS LISTENING AT %s", http_addr)
 	go func() {
 		if err := fasthttp.ListenAndServe(http_addr, me.handleHTTPRequest); err != nil {
 			me.Log("ERR %v", err)
 		}
 	}()
 
-	me.Log("RPC SERVER IS LISTENING AT", rpc_addr)
+	me.Log("RPC SERVER IS LISTENING AT %s", rpc_addr)
 
 	listener := &defaultListener{}
 	if err := listener.Init(rpc_addr); err != nil {
@@ -93,14 +93,14 @@ func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
 	}
 	// the main tcp accept loop
 	for {
-		conn, _, err := listener.Accept()
+		conn, addr, err := listener.Accept()
 		if err != nil {
 			me.Stats.incAcceptErrors()
-			me.Log("gorpc.Server: [%s]. Cannot accept new connection: [%s]", rpc_addr, err)
+			me.Log("Cannot accept new connection: [%s]", err)
 			continue
 		}
 		me.Stats.incAcceptCalls()
-		go me.handleNewWorker(conn)
+		go me.handleNewWorker(conn, addr)
 	}
 }
 
@@ -168,22 +168,23 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		workers = me.defaults[domain].workers
 	}
 
+	me.lock.Lock()
 	if len(workers) == 0 {
-		ctx.Response.Header.SetStatusCode(404)
-		fmt.Fprintf(ctx, "not found any client %s %s", domain, path)
+		me.lock.Unlock()
+		ctx.Response.Header.SetStatusCode(503)
+		fmt.Fprintf(ctx, "no available workers for path %s%s", domain, path)
 		return
 	}
 
 	// pick client in workers using round robin strategy
 	count := int(atomic.AddUint64(&me.requestcount, 1))
-	me.lock.Lock()
 	worker := workers[count%len(workers)]
 	me.lock.Unlock()
 
 	// TODO: implement retry, circuit breaker
 	res, err := worker.Call(convertRequest(ctx))
 	if err != nil {
-		ctx.Response.Header.SetStatusCode(500)
+		ctx.Response.Header.SetStatusCode(502)
 		fmt.Fprintf(ctx, "err: %s", err.Error())
 		return
 	}
@@ -252,10 +253,11 @@ func (me *ReverseProxy) cleanFailedWorkers() {
 // handleNewWorker registers a new worker to the server
 // this function is called after after a worker has established a new
 // connection with the server.
-func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
+func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser, addr string) {
 	var dialed bool
 	var worker *Client
 	worker = &Client{
+		Addr: addr,
 		Dial: func(_ string) (io.ReadWriteCloser, error) {
 			if !dialed {
 				dialed = true
@@ -263,7 +265,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 			}
 			// old connection is dead, we will not reuse the client
 			// because we are unable to reconnect to the NAT hided api server
-			go worker.Stop()
+			worker.Stop()
 			worker.IsStopped = true
 			me.cleanFailedWorkers()
 			return nil, fmt.Errorf("STOPEED")
@@ -271,12 +273,13 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	}
 	worker.Start()
 
+	// worker is now ready
 	// first message is from the server to the endpoint
 	// endpoint should return paths that its able to handle
 	response, err := worker.Call(Request{Uri: []byte("_status")})
 	if err != nil {
 		// oops, wrong protocol, or there is something wrong, cleaning
-		// me.Log("gorpc.Server:. Error [%s]", err)
+		me.Log("CANNOT CALL %s", err)
 		conn.Close()
 		return
 	}
@@ -284,7 +287,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	status := &StatusResponse{}
 	if err := json.Unmarshal(response.Body, status); err != nil {
 		// wrong answer
-		// me.Log("gorpc.Server: unable to get status [%s]", err)
+		me.Log("gorpc.Server: unable to get status [%s]", err)
 		conn.Close()
 		return
 	}
@@ -292,7 +295,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	for _, domain := range status.GetDomains() {
 		rule := me.rules[domain]
 		if rule == nil {
-			me.Log("ignoring domain", domain)
+			me.Log("ignoring domain %s", domain)
 			continue
 		}
 		for _, path := range status.GetPaths() {
@@ -301,13 +304,13 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 				me.lock.Lock()
 				defhandler.workers = appendOnce(defhandler.workers, worker)
 				me.lock.Unlock()
-				me.Log("REGISTERING DEF", domain)
+				me.Log("REGISTERING DEF %s", domain)
 				continue
 			}
 
 			h, _, _ := rule.getValue(path)
 			if handler, _ := h.(*Handle); handler != nil {
-				me.Log("REGISTERING", domain, path)
+				me.Log("REGISTERING %s %s", domain, path)
 				handler.workers = appendOnce(handler.workers, worker)
 			}
 		}
