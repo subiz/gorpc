@@ -16,9 +16,9 @@ import (
 
 // ReverseProxy proxied HTTP requests to its behine-NAT workers
 type ReverseProxy struct {
-	// LogError is used for error logging.
+	// Log is used for error logging.
 	// By default the function set via SetErrorLogger() is used.
-	LogError LoggerFunc
+	Log LoggerFunc
 
 	// Connection statistics.
 	// The stats doesn't reset automatically. Feel free resetting it
@@ -57,6 +57,7 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 		rules:    make(map[string]*node),
 		defaults: make(map[string]*Handle),
 		config:   config,
+		Log:      muteLogger,
 	}
 
 	// register
@@ -65,7 +66,7 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 			rule := &node{}
 			s.rules[domain] = rule
 			for _, path := range host.GetPaths() {
-				println("ADD ROUTE", domain, path)
+				s.Log("ADD ROUTE", domain, path)
 				rule.addRoute(path, &Handle{})
 			}
 
@@ -77,18 +78,14 @@ func NewReverseProxy(config *Config) *ReverseProxy {
 
 // Serve starts reverse proxy server and http server and blocks forever
 func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
-	fmt.Println("HTTP SERVER IS LISTENING AT", http_addr)
+	me.Log("HTTP SERVER IS LISTENING AT", http_addr)
 	go func() {
 		if err := fasthttp.ListenAndServe(http_addr, me.handleHTTPRequest); err != nil {
-			fmt.Println(err)
+			me.Log("ERR %v", err)
 		}
 	}()
 
-	if me.LogError == nil {
-		me.LogError = errorLogger
-	}
-
-	fmt.Println("RPC SERVER IS LISTENING AT", rpc_addr)
+	me.Log("RPC SERVER IS LISTENING AT", rpc_addr)
 
 	listener := &defaultListener{}
 	if err := listener.Init(rpc_addr); err != nil {
@@ -99,7 +96,7 @@ func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
 		conn, _, err := listener.Accept()
 		if err != nil {
 			me.Stats.incAcceptErrors()
-			me.LogError("gorpc.Server: [%s]. Cannot accept new connection: [%s]", rpc_addr, err)
+			me.Log("gorpc.Server: [%s]. Cannot accept new connection: [%s]", rpc_addr, err)
 			continue
 		}
 		me.Stats.incAcceptCalls()
@@ -279,7 +276,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	response, err := worker.Call(Request{Uri: []byte("_status")})
 	if err != nil {
 		// oops, wrong protocol, or there is something wrong, cleaning
-		// me.LogError("gorpc.Server:. Error [%s]", err)
+		// me.Log("gorpc.Server:. Error [%s]", err)
 		conn.Close()
 		return
 	}
@@ -287,7 +284,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	status := &StatusResponse{}
 	if err := json.Unmarshal(response.Body, status); err != nil {
 		// wrong answer
-		// me.LogError("gorpc.Server: unable to get status [%s]", err)
+		// me.Log("gorpc.Server: unable to get status [%s]", err)
 		conn.Close()
 		return
 	}
@@ -295,7 +292,7 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 	for _, domain := range status.GetDomains() {
 		rule := me.rules[domain]
 		if rule == nil {
-			fmt.Println("ignoring domain", domain)
+			me.Log("ignoring domain", domain)
 			continue
 		}
 		for _, path := range status.GetPaths() {
@@ -304,13 +301,13 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 				me.lock.Lock()
 				defhandler.workers = appendOnce(defhandler.workers, worker)
 				me.lock.Unlock()
-				println("REGISTERING DEF", domain)
+				me.Log("REGISTERING DEF", domain)
 				continue
 			}
 
 			h, _, _ := rule.getValue(path)
 			if handler, _ := h.(*Handle); handler != nil {
-				println("REGISTERING", domain, path)
+				me.Log("REGISTERING", domain, path)
 				handler.workers = appendOnce(handler.workers, worker)
 			}
 		}
@@ -324,12 +321,12 @@ func (me *ReverseProxy) handleNewWorker(conn io.ReadWriteCloser) {
 func loadConfig() *Config {
 	b, err := ioutil.ReadFile("/etc/gorpc.json")
 	if err != nil {
-		fmt.Println("/etc/gorpc.json not found")
+		errorLogger("/etc/gorpc.json not found")
 		panic(err)
 	}
 	config := &Config{}
 	if err := json.Unmarshal(b, config); err != nil {
-		fmt.Println("invalid config")
+		errorLogger("invalid config")
 		panic(err)
 	}
 	return config

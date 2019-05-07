@@ -48,6 +48,8 @@ type LoggerFunc func(format string, args ...interface{})
 
 var errorLogger = LoggerFunc(log.Printf)
 
+var muteLogger = LoggerFunc(func(_ string, _ ...interface{}) {})
+
 // SetErrorLogger sets the given error logger to use in gorpc.
 //
 // By default log.Printf is used for error logging.
