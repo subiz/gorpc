@@ -83,6 +83,18 @@ func (me *Router) Handle(req Request) Response {
 		root = me.del_root
 	}
 
+	if req.Header == nil {
+		req.Header = make(map[string][]byte)
+	}
+	if req.Query == nil {
+		req.Query = make(map[string][]byte)
+	}
+	if req.Form == nil {
+		req.Form = make(map[string][]byte)
+	}
+	if req.Cookie == nil {
+		req.Cookie = make(map[string][]byte)
+	}
 	res := Response{}
 	res.Header = make(map[string][]byte)
 	if root == nil {

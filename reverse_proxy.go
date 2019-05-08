@@ -127,8 +127,6 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		fmt.Fprintf(ctx, "no avaiable workers for domain %s%s", domain, path)
 		return
 	}
-
-	me.Log("PREPARE", domain, path)
 	var workers []*Client // workers matched request domain and path
 	h, _, _ := rule.getValue(path)
 	if handler, _ := h.(*Handle); handler != nil {
@@ -152,7 +150,6 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	me.lock.Unlock()
 
 	// TODO: implement retry, circuit breaker
-	me.Log("REG", domain, path)
 	res, err := worker.Call(convertRequest(ctx))
 	if err != nil {
 		ctx.Response.Header.SetStatusCode(502)
