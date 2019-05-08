@@ -25,8 +25,7 @@ func NewRouter(proxy_addrs, domains []string) *Router {
 		post_root:   &node{},
 		del_root:    &node{},
 		def: func(c *Context) {
-			c.SetCode(400)
-			c.String("dashboard not found :(( " + c.Request.Path + ".")
+			c.String(400, "dashboard not found :(( " + c.Request.Path + ".")
 		},
 		stop: make(chan bool),
 	}
@@ -169,10 +168,8 @@ type Context struct {
 	Aborted  bool
 }
 
-func (c *Context) JSON(v interface{}) {
-	if c.Response.StatusCode == 0 {
-		c.Response.StatusCode = 200
-	}
+func (c *Context) JSON(code int, v interface{}) {
+	c.Response.StatusCode = int32(code)
 	c.Response.Header["content-type"] = APPJSON
 
 	if mars, ok := v.(Marshaller); ok {
@@ -182,18 +179,14 @@ func (c *Context) JSON(v interface{}) {
 	}
 }
 
-func (c *Context) Data(contenttype string, data []byte) {
-	if c.Response.StatusCode == 0 {
-		c.Response.StatusCode = 200
-	}
+func (c *Context) Data(code int, contenttype string, data []byte) {
+	c.Response.StatusCode = int32(code)
 	c.Response.Header["content-type"] = []byte(contenttype)
 	c.Response.Body = data
 }
 
-func (c *Context) String(str string) {
-	if c.Response.StatusCode == 0 {
-		c.Response.StatusCode = 200
-	}
+func (c *Context) String(code int, str string) {
+	c.Response.StatusCode = int32(code)
 	c.Response.Header["content-type"] = TEXTPLAIN
 	c.Response.Body = []byte(str)
 }
@@ -205,3 +198,5 @@ func (c *Context) Abort() {
 func (c *Context) SetCode(statuscode int) {
 	c.Response.StatusCode = int32(statuscode)
 }
+
+type H map[string]interface{}
