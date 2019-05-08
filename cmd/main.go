@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/subiz/gorpc"
+	"log"
 )
 
 func main() {
@@ -12,5 +13,7 @@ func main() {
 	var http_addr = flag.String("http", ":80", "address for the Http server")
 	flag.Parse()
 
-	gorpc.NewReverseProxy().Serve(*rpc_addr, *http_addr)
+	proxy := gorpc.NewReverseProxy()
+	proxy.Log = log.Printf
+	proxy.Serve(*rpc_addr, *http_addr)
 }

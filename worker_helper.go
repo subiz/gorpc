@@ -86,13 +86,13 @@ func (me *Router) Handle(req Request) Response {
 	res := Response{}
 	res.Header = make(map[string][]byte)
 	if root == nil {
-		me.def(&Context{Request: req, Response: &res})
+		me.def(&Context{Request: req, Params: Params{}, Store: make(map[string]string), Response: &res})
 		return res
 	}
 	h, ps, _ := root.getValue(req.Path)
 	handler, _ := h.(Handler)
 	if handler == nil {
-		me.def(&Context{Request: req, Response: &res})
+		me.def(&Context{Request: req, Params: ps, Store: make(map[string]string), Response: &res})
 		return res
 	}
 
