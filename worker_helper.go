@@ -25,7 +25,7 @@ func NewRouter(proxy_addrs, domains []string) *Router {
 		post_root:   &node{},
 		del_root:    &node{},
 		def: func(c *Context) {
-			c.String(400, "dashboard not found :(( " + c.Request.Path + ".")
+			c.String(400, "dashboard not found :(( "+c.Request.Path+".")
 		},
 		stop: make(chan bool),
 	}
@@ -71,7 +71,16 @@ func (me *Router) Run() {
 	is_stopped = true
 }
 
-func (me *Router) Handle(req Request) Response {
+func (me *Router) Handle(req Request) (res Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = Response{
+				StatusCode: 500,
+				Header:     map[string][]byte{"content-type": []byte("text/plain")},
+				Body:       []byte(fmt.Sprintf("ROUTING ERR: %v", r)),
+			}
+		}
+	}()
 	var root *node
 	switch req.Method {
 	case "GET":
@@ -94,7 +103,6 @@ func (me *Router) Handle(req Request) Response {
 	if req.Cookie == nil {
 		req.Cookie = make(map[string][]byte)
 	}
-	res := Response{}
 	res.Header = make(map[string][]byte)
 	if root == nil {
 		me.def(&Context{Request: req, Params: Params{}, Store: make(map[string]string), Response: &res})
