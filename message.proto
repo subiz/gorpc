@@ -21,8 +21,10 @@ message Request {
 	int64 received = 15;
 	string path = 16; // dont contain query
 	string host = 17; // domain and port
-	map<string, bytes> form = 18;
-	map<string, bytes> query = 19;
+	map<string, bytes> form1 = 18;
+	map<string, bytes> query1 = 19;
+	map<string, string> form = 20;
+	map<string, string> query = 21;
 }
 
 message Response {
