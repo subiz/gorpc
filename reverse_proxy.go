@@ -88,11 +88,19 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 	delete(header, "cookie")
 	delete(header, "user-agent")
 
-	query := make(map[string][]byte)
-	ctx.QueryArgs().VisitAll(func(key, val []byte) { query[string(key)] = val })
+	query1 := make(map[string][]byte)
+	query := make(map[string]string)
+	ctx.QueryArgs().VisitAll(func(key, val []byte) {
+		query[string(key)] = string(val)
+		query1[string(key)] = val
+	})
 
-	form := make(map[string][]byte)
-	ctx.PostArgs().VisitAll(func(key, val []byte) { form[string(key)] = val })
+	form1 := make(map[string][]byte)
+	form := make(map[string]string)
+	ctx.PostArgs().VisitAll(func(key, val []byte) {
+		form[string(key)] = string(val)
+		form1[string(key)] = val
+	})
 
 	ip, _, _ := net.SplitHostPort(ctx.RemoteAddr().String())
 	return Request{
@@ -108,6 +116,8 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Received:   time.Now().UnixNano() / 1e6,
 		Path:       string(ctx.Path()),
 		Host:       string(ctx.Host()),
+		Query1:     query1,
+		Form1:      form1,
 		Query:      query,
 		Form:       form,
 	}
