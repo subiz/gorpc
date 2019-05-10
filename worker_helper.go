@@ -76,7 +76,7 @@ func (me *Router) Handle(req Request) (res Response) {
 		if r := recover(); r != nil {
 			res = Response{
 				StatusCode: 500,
-				Header:     map[string][]byte{"content-type": []byte("text/plain")},
+				Header:     map[string][]byte{"content-type": TEXTPLAIN},
 				Body:       []byte(fmt.Sprintf("ROUTING ERR: %v", r)),
 			}
 		}
@@ -165,6 +165,12 @@ type Context struct {
 	aborted  bool
 }
 
+func (c *Context) Html(code int, html []byte) {
+	c.response.StatusCode = int32(code)
+	c.SetHeader("content-type", TEXTHTML)
+	c.response.Body = html
+}
+
 func (c *Context) JSON(code int, v interface{}) {
 	c.response.StatusCode = int32(code)
 	c.SetHeader("content-type", APPJSON)
@@ -193,7 +199,9 @@ func (c *Context) Data(code int, contenttype string, data []byte) {
 		ct = []byte(contenttype)
 	}
 
-	c.SetHeader("content-type", ct)
+	if len(ct) > 0 {
+		c.SetHeader("content-type", ct)
+	}
 	c.response.Body = data
 }
 
@@ -277,35 +285,26 @@ func (c *Context) Header(key string) []byte {
 	return c.request.Header[key]
 }
 
-func (c *Context) Method() string {
-	return c.request.Method
+func (c *Context) VisitHeader(f func(key string, val []byte)) {
+	for k, v := range c.request.Header {
+		f(k, v)
+	}
 }
 
-func (c *Context) Uri() string {
-	return string(c.request.Uri)
-}
+func (c *Context) Method() string { return c.request.Method }
 
-func (c *Context) Body() []byte {
-	return c.request.Body
-}
+func (c *Context) Uri() string { return string(c.request.Uri) }
 
-func (c *Context) UserAgent() []byte {
-	return c.request.UserAgent
-}
+func (c *Context) Body() []byte { return c.request.Body }
 
-func (c *Context) RemoteAddr() string {
-	return c.request.RemoteAddr
-}
-func (c *Context) Referer() string {
-	return c.request.Referer
-}
+func (c *Context) UserAgent() []byte { return c.request.UserAgent }
 
-func (c *Context) Path() string {
-	return c.request.Path
-}
+func (c *Context) RemoteAddr() string { return c.request.RemoteAddr }
 
-func (c *Context) Host() string {
-	return c.request.Host
-}
+func (c *Context) Referer() string { return c.request.Referer }
+
+func (c *Context) Path() string { return c.request.Path }
+
+func (c *Context) Host() string { return c.request.Host }
 
 type H map[string]interface{}
