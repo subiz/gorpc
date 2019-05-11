@@ -307,4 +307,6 @@ func (c *Context) Path() string { return c.request.Path }
 
 func (c *Context) Host() string { return c.request.Host }
 
+func (c *Context) RawQuery() map[string]string { return c.request.Query }
+
 type H map[string]interface{}
