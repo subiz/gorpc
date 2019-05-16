@@ -149,14 +149,6 @@ var APPJSON = []byte("application/json")
 var JAVASCRIPT = []byte("text/javascript")
 var TEXTHTML = []byte("text/html")
 
-type Marshaller interface {
-	MarshalJSON() ([]byte, error)
-}
-
-type Unmarshaller interface {
-	UnmarshalJSON(data []byte) error
-}
-
 type Context struct {
 	request  Request
 	params   Params
@@ -165,7 +157,7 @@ type Context struct {
 	aborted  bool
 }
 
-func (c *Context) Html(code int, html []byte) {
+func (c *Context) HTML(code int, html []byte) {
 	c.response.StatusCode = int32(code)
 	c.SetHeader("content-type", TEXTHTML)
 	c.response.Body = html
@@ -174,11 +166,6 @@ func (c *Context) Html(code int, html []byte) {
 func (c *Context) JSON(code int, v interface{}) {
 	c.response.StatusCode = int32(code)
 	c.SetHeader("content-type", APPJSON)
-
-	if mars, ok := v.(Marshaller); ok {
-		c.response.Body, _ = mars.MarshalJSON()
-		return
-	}
 	c.response.Body, _ = json.Marshal(v)
 }
 
