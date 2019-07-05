@@ -264,7 +264,15 @@ func (c *Context) SetHeader(key string, val []byte) {
 	c.response.Header[key] = val
 }
 
-// SetHeader adds a header to response, override last header with same key
+// DelHeader removes a header of response
+func (c *Context) DelHeader(key string) {
+	if c.response.Header == nil {
+		return
+	}
+	delete(c.response.Header, key)
+}
+
+// Header returns value of a request header
 func (c *Context) Header(key string) []byte {
 	if c.request.Header == nil {
 		return nil
