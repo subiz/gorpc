@@ -34,6 +34,7 @@ message Response {
 	bytes body = 5;
 	map<string, bytes> header = 10;
 	repeated Cookie cookies = 12;
+	Request redirect_request = 13;
 }
 
 message Cookie {
