@@ -198,6 +198,10 @@ func (c *Context) String(code int, str string) {
 	c.response.Body = []byte(str)
 }
 
+func (c *Context) Redirect(req *Request) {
+	c.response.RedirectRequest = req
+}
+
 func (c *Context) Abort() { c.aborted = true }
 
 func (c *Context) SetString(key, val string) {
@@ -285,6 +289,8 @@ func (c *Context) VisitHeader(f func(key string, val []byte)) {
 		f(k, v)
 	}
 }
+
+func (c *Context) Version() string { return c.request.Version }
 
 func (c *Context) Method() string { return c.request.Method }
 
