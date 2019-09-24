@@ -123,26 +123,25 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 	}
 }
 
-// handleHTTPRequest received a HTTP request, forwarded it to matched workers
-// then sent back response to the client
-func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
-	domain, path := string(ctx.Host()), string(ctx.Path())
-
+// ctx is just for writing response
+func (me *ReverseProxy) handleRequest(ctx *fasthttp.RequestCtx, req Request) {
+	host, path := req.GetHost(), req.GetPath()
 	me.lock.Lock()
 	// find the matched workers for request domain and path
-	rule := me.rules[domain]
+	rule := me.rules[host]
 	if rule == nil {
 		me.lock.Unlock()
 		ctx.Response.Header.SetStatusCode(503)
-		fmt.Fprintf(ctx, "no avaiable workers for domain %s%s", domain, path)
+		fmt.Fprintf(ctx, "no avaiable workers for domain %s%s", host, path)
 		return
 	}
+
 	var workers []*Client // workers matched request domain and path
 	h, _, _ := rule.getValue(path)
 	if handler, _ := h.(*Handle); handler != nil {
 		workers = handler.workers
 	} else { // no handler found, fallback to default workers
-		if defhandler := me.defaults[domain]; defhandler != nil {
+		if defhandler := me.defaults[host]; defhandler != nil {
 			workers = defhandler.workers
 		}
 	}
@@ -150,7 +149,7 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	if len(workers) == 0 {
 		me.lock.Unlock()
 		ctx.Response.Header.SetStatusCode(503)
-		fmt.Fprintf(ctx, "no available workers for path %s%s", domain, path)
+		fmt.Fprintf(ctx, "no available workers for path %s%s", host, path)
 		return
 	}
 
@@ -160,10 +159,15 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 	me.lock.Unlock()
 
 	// TODO: implement retry, circuit breaker
-	res, err := worker.Call(convertRequest(ctx))
+	res, err := worker.Call(req)
 	if err != nil {
 		ctx.Response.Header.SetStatusCode(502)
 		fmt.Fprintf(ctx, "err: %s", err.Error())
+		return
+	}
+
+	if res.RedirectRequest != nil {
+		me.handleRequest(ctx, *res.RedirectRequest)
 		return
 	}
 
@@ -176,6 +180,12 @@ func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
 		ctx.Response.Header.SetBytesV(k, v)
 	}
 	ctx.Response.SetBody(res.Body)
+}
+
+// handleHTTPRequest received a HTTP request, forwarded it to matched workers
+// then sent back response to the client
+func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
+	me.handleRequest(ctx, convertRequest(ctx))
 }
 
 // toFastHTTPCookie convert proto.Cookie to fastHTTP.Cookie
