@@ -24,7 +24,7 @@ bench-8-goprocs:
 
 build:
 	/snap/bin/protoc --go_out=plugins=grpc:. *.proto
-	cd cmd && go build -ldflags="-s -w"
+	cd cmd && go build -ldflags="-s -w" && cd ..
 	mv cmd/cmd server
 
 deploy: build
