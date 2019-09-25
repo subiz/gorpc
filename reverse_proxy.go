@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,12 +42,25 @@ type ReverseProxy struct {
 // The configuration in /etc/gorpc.json will be loaded
 // After this, user can start the server by calling Serve().
 func NewReverseProxy() *ReverseProxy {
+	go freeMemory()
 	return &ReverseProxy{
 		counter:  ratecounter.NewRateCounter(1 * time.Second),
 		lock:     &sync.Mutex{},
 		rules:    make(map[string]*node),
 		defaults: make(map[string]*Handle),
 		Log:      muteLogger,
+	}
+}
+
+func freeMemory() {
+	for {
+		fmt.Println("run gc")
+		start := time.Now()
+		runtime.GC()
+		debug.FreeOSMemory()
+		elapsed := time.Since(start)
+		fmt.Printf("gc took %s\n", elapsed)
+		time.Sleep(5 * time.Minute)
 	}
 }
 
