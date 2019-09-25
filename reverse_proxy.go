@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/paulbellamy/ratecounter"
 	"github.com/valyala/fasthttp"
 )
 
@@ -29,6 +33,7 @@ type ReverseProxy struct {
 	// map domain with its default workers, those workers will handle requests
 	// which doesn't match any rules defined in roots for a givien domain
 	defaults map[string]*Handle
+	counter  *ratecounter.RateCounter
 }
 
 // NewReverseProxy setups a new ReverseProxy server
@@ -36,6 +41,7 @@ type ReverseProxy struct {
 // After this, user can start the server by calling Serve().
 func NewReverseProxy() *ReverseProxy {
 	return &ReverseProxy{
+		counter:  ratecounter.NewRateCounter(1 * time.Second),
 		lock:     &sync.Mutex{},
 		rules:    make(map[string]*node),
 		defaults: make(map[string]*Handle),
@@ -45,10 +51,21 @@ func NewReverseProxy() *ReverseProxy {
 
 // Serve starts reverse proxy server and http server and blocks forever
 func (me *ReverseProxy) Serve(rpc_addr, http_addr string) {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	me.Log("HTTP SERVER IS LISTENING AT %s", http_addr)
 	go func() {
 		if err := fasthttp.ListenAndServe(http_addr, me.handleHTTPRequest); err != nil {
 			me.Log("ERR %v", err)
+		}
+	}()
+
+	go func() {
+		for {
+			fmt.Println("RPS", me.counter.Rate())
+			time.Sleep(5 * time.Second)
 		}
 	}()
 
@@ -88,18 +105,14 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 	delete(header, "cookie")
 	delete(header, "user-agent")
 
-	query1 := make(map[string][]byte)
 	query := make(map[string]string)
 	ctx.QueryArgs().VisitAll(func(key, val []byte) {
 		query[string(key)] = string(val)
-		query1[string(key)] = val
 	})
 
-	form1 := make(map[string][]byte)
 	form := make(map[string]string)
 	ctx.PostArgs().VisitAll(func(key, val []byte) {
 		form[string(key)] = string(val)
-		form1[string(key)] = val
 	})
 
 	ip, _, _ := net.SplitHostPort(ctx.RemoteAddr().String())
@@ -116,8 +129,6 @@ func convertRequest(ctx *fasthttp.RequestCtx) Request {
 		Received:   time.Now().UnixNano() / 1e6,
 		Path:       string(ctx.Path()),
 		Host:       string(ctx.Host()),
-		Query1:     query1,
-		Form1:      form1,
 		Query:      query,
 		Form:       form,
 	}
@@ -185,6 +196,7 @@ func (me *ReverseProxy) handleRequest(ctx *fasthttp.RequestCtx, req Request) {
 // handleHTTPRequest received a HTTP request, forwarded it to matched workers
 // then sent back response to the client
 func (me *ReverseProxy) handleHTTPRequest(ctx *fasthttp.RequestCtx) {
+	me.counter.Incr(1)
 	me.handleRequest(ctx, convertRequest(ctx))
 }
 
